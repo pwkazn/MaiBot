@@ -6,6 +6,22 @@ from .base import KernelServiceBase
 
 
 class MemoryImportTuningAdminService(KernelServiceBase):
+    async def _ensure_vector_runtime_for_task(self) -> None:
+        """创建任务前完成待验证的向量加载，并保留真实故障原因。"""
+
+        if self._vector_health["error_code"] == "embedding_fingerprint_unavailable":
+            # 冷启动的首次后台探测尚未执行时，由实际导入或调优请求完成验证。
+            recovery = await self._recover_embedding_once()
+            if not recovery["success"]:
+                raise ValueError(f"任务创建前 Embedding 验证失败: {recovery['report']['message']}")
+
+        # Embedding 请求成功不代表向量加载成功，必须检查恢复后的存储状态。
+        if self.vector_store is None and self._vector_health["error_code"]:
+            raise ValueError(
+                "任务创建前向量存储不可用: "
+                f"code={self._vector_health['error_code']}, error={self._vector_health['reason']}"
+            )
+
     async def memory_import_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
         await self.initialize()
         manager = self.import_task_manager
@@ -13,6 +29,8 @@ class MemoryImportTuningAdminService(KernelServiceBase):
             return {"success": False, "error": "import manager 未初始化"}
 
         act = str(action or "").strip().lower()
+        if act in {"create_upload", "create_paste", "create_raw_scan", "create_lpmm_openie", "create_maibot_migration"}:
+            await self._ensure_vector_runtime_for_task()
         if act in {"settings", "get_settings", "get_guide"}:
             return {"success": True, "settings": await manager.get_runtime_settings()}
         if act in {"path_aliases", "get_path_aliases"}:
@@ -113,6 +131,7 @@ class MemoryImportTuningAdminService(KernelServiceBase):
                 "toml": manager.export_toml_snippet(persistable_profile),
             }
         if act == "create_task":
+            await self._ensure_vector_runtime_for_task()
             payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else kwargs
             return {"success": True, "task": await manager.create_task(payload)}
         if act == "list_tasks":

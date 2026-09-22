@@ -6,7 +6,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from weakref import WeakValueDictionary
 
 import asyncio
@@ -185,12 +185,14 @@ class SummaryImporter:
         metadata_store: MetadataStore,
         embedding_manager: EmbeddingAPIAdapter,
         plugin_config: dict,
+        persist_callback: Optional[Callable[[], None]] = None,
     ):
         self.vector_store = vector_store
         self.graph_store = graph_store
         self.metadata_store = metadata_store
         self.embedding_manager = embedding_manager
         self.plugin_config = plugin_config
+        self._persist_callback = persist_callback
         self._import_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self.relation_write_service: Optional[RelationWriteService] = (
             plugin_config.get("relation_write_service") if isinstance(plugin_config, dict) else None
@@ -704,8 +706,12 @@ class SummaryImporter:
             )
 
             # 7. 持久化
-            self.vector_store.save()
-            self.graph_store.save()
+            if self._persist_callback is not None:
+                # 恢复向量通道后存储实例可能已替换，由宿主持久化当前向量池及指纹。
+                self._persist_callback()
+            else:
+                self.vector_store.save()
+                self.graph_store.save()
 
             external_id = str((metadata or {}).get("external_id", "") or "").strip()
             if external_id:

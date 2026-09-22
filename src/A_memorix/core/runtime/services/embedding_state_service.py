@@ -347,11 +347,11 @@ class MemoryEmbeddingStateService(KernelServiceBase):
                     self._vectors_root(),
                     dimension=self._current_embedding_status_dimension(),
                 )
+                dual_loaded = False
                 if self._dual_vector_pools_config_enabled():
-                    loaded = self._reload_dual_vector_stores_from_disk()
-                    if not loaded:
-                        raise RuntimeError("Embedding 恢复后未找到可加载的双池向量世代")
-                else:
+                    dual_loaded = self._reload_dual_vector_stores_from_disk()
+                # 配置双池不代表历史数据已迁移，恢复时与启动流程一样加载实际存在的单池。
+                if not dual_loaded:
                     expected_fingerprint = self._current_embedding_fingerprint_for_validation()
                     if expected_fingerprint is None:
                         raise VectorStoreIntegrityError(
@@ -370,7 +370,6 @@ class MemoryEmbeddingStateService(KernelServiceBase):
                     self.vector_store.warmup_index(force_train=True)
                     self.paragraph_vector_store = self._make_vector_store(self._paragraph_vector_dir())
                     self.graph_vector_store = self._make_vector_store(self._graph_vector_dir())
-                    loaded = True
             except VectorStoreIntegrityError as exc:
                 if not self._recover_known_vector_failure(exc):
                     raise
@@ -408,7 +407,9 @@ class MemoryEmbeddingStateService(KernelServiceBase):
                 log_prefix="[sdk]",
             )
             if not runtime_bundle.ready:
-                logger.warning(runtime_bundle.error or "Embedding 恢复后检索运行时重建失败")
+                self._disable_vector_channel(
+                    RuntimeError(runtime_bundle.error or "Embedding 恢复后检索运行时重建失败")
+                )
                 return False
 
             self._runtime_bundle = runtime_bundle

@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
+from unittest.mock import AsyncMock
 
 import asyncio
 import threading
@@ -701,8 +702,10 @@ async def test_embedding_recover_uses_kernel_patched_recovery_boundaries(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_ready", [True, False])
 async def test_embedding_recovery_restores_vector_runtime_after_fingerprint_becomes_available(
     monkeypatch: pytest.MonkeyPatch,
+    runtime_ready: bool,
 ) -> None:
     kernel = SDKMemoryKernel(plugin_root=Path.cwd(), config={})
     root_vector_store = object()
@@ -733,11 +736,11 @@ async def test_embedding_recovery_restores_vector_runtime_after_fingerprint_beco
         assert kwargs["plugin_config"]["graph_vector_store"] is graph_vector_store
         calls.append("runtime")
         return SimpleNamespace(
-            ready=True,
+            ready=runtime_ready,
             retriever=retriever,
             threshold_filter=threshold_filter,
             sparse_index=None,
-            error="",
+            error="" if runtime_ready else "检索运行时依赖未就绪",
         )
 
     monkeypatch.setattr(kernel, "_make_vector_store", fake_make_vector_store)
@@ -752,6 +755,20 @@ async def test_embedding_recovery_restores_vector_runtime_after_fingerprint_beco
     monkeypatch.setattr(kernel, "_apply_runtime_sparse_mode", lambda: calls.append("sparse_mode"))
 
     restored = await kernel._embedding_state_service._restore_vector_channel_after_embedding_recovery()
+
+    if not runtime_ready:
+        assert restored is False
+        assert calls == ["root_store", "reload", "runtime"]
+        assert kernel.vector_store is None
+        assert kernel.paragraph_vector_store is None
+        assert kernel.graph_vector_store is None
+        assert kernel._runtime_capabilities["vector_read"] is False
+        assert kernel._runtime_capabilities["vector_write"] is False
+        assert kernel._vector_health["error_code"] == "vector_unclassified_error"
+        assert kernel._vector_health["reason"] == "检索运行时依赖未就绪"
+        with pytest.raises(ValueError, match="检索运行时依赖未就绪"):
+            await kernel._import_tuning_admin_service._ensure_vector_runtime_for_task()
+        return
 
     assert restored is True
     assert calls == ["root_store", "reload", "runtime", "relation_writer", "dependents:True", "sparse_mode"]
@@ -788,6 +805,155 @@ async def test_embedding_probe_retries_pending_vector_fingerprint_without_embedd
     await kernel._background_task_service._embedding_probe_loop()
 
     assert calls == ["recover"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "manager_method"),
+    [
+        ("create_upload", "create_upload_task"),
+        ("create_paste", "create_paste_task"),
+        ("create_raw_scan", "create_raw_scan_task"),
+        ("create_lpmm_openie", "create_lpmm_openie_task"),
+        ("create_maibot_migration", "create_maibot_migration_task"),
+        ("create_task", "create_task"),
+    ],
+)
+@pytest.mark.parametrize("fingerprint_pending", [True, False])
+async def test_import_and_tuning_creation_recovers_pending_vectors_before_creating_task(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    manager_method: str,
+    fingerprint_pending: bool,
+) -> None:
+    kernel = SDKMemoryKernel(plugin_root=Path.cwd(), config={})
+    vector_store = object()
+    kernel.vector_store = None if fingerprint_pending else vector_store  # type: ignore[assignment]
+    kernel._vector_health.update(
+        error_code="embedding_fingerprint_unavailable" if fingerprint_pending else "",
+        reason="等待模型指纹验证" if fingerprint_pending else "",
+    )
+    calls: List[str] = []
+    task = {"task_id": "task-1"}
+
+    async def recover() -> Dict[str, Any]:
+        calls.append("recover")
+        kernel.vector_store = vector_store  # type: ignore[assignment]
+        kernel._vector_health.update(error_code="", reason="")
+        return {"success": True, "report": {"ok": True}}
+
+    async def create_task(*args: Any) -> Dict[str, Any]:
+        assert kernel.vector_store is vector_store
+        calls.append("create")
+        return task
+
+    recovery = AsyncMock(side_effect=recover)
+    creator = AsyncMock(side_effect=create_task)
+    manager = SimpleNamespace(**{manager_method: creator})
+    if action == "create_task":
+        kernel.retrieval_tuning_manager = manager  # type: ignore[assignment]
+        admin = kernel.memory_tuning_admin
+    else:
+        kernel.import_task_manager = manager  # type: ignore[assignment]
+        admin = kernel.memory_import_admin
+    monkeypatch.setattr(kernel, "initialize", AsyncMock())
+    monkeypatch.setattr(kernel, "_recover_embedding_once", recovery)
+
+    result = await admin(action=action, marker="原始任务参数")
+
+    assert result == {"success": True, "task": task}
+    assert calls == (["recover", "create"] if fingerprint_pending else ["create"])
+    payload = {"marker": "原始任务参数"}
+    if action == "create_upload":
+        creator.assert_awaited_once_with([], payload)
+    else:
+        creator.assert_awaited_once_with(payload)
+    if fingerprint_pending:
+        recovery.assert_awaited_once()
+    else:
+        recovery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create_paste", "create_task"])
+@pytest.mark.parametrize("failure_stage", ["probe", "reload", "already_unavailable"])
+async def test_import_and_tuning_creation_exposes_vector_failure_without_creating_task(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    failure_stage: str,
+) -> None:
+    kernel = SDKMemoryKernel(plugin_root=Path.cwd(), config={})
+    initial_pending = failure_stage != "already_unavailable"
+    kernel._vector_health.update(
+        error_code="embedding_fingerprint_unavailable" if initial_pending else "v2_fingerprint_mismatch",
+        reason="等待模型指纹验证" if initial_pending else "向量模型指纹不匹配",
+    )
+    creator = AsyncMock()
+    if action == "create_task":
+        kernel.retrieval_tuning_manager = SimpleNamespace(create_task=creator)  # type: ignore[assignment]
+        admin = kernel.memory_tuning_admin
+    else:
+        kernel.import_task_manager = SimpleNamespace(create_paste_task=creator)  # type: ignore[assignment]
+        admin = kernel.memory_import_admin
+
+    async def recover() -> Dict[str, Any]:
+        if failure_stage == "reload":
+            kernel._vector_health.update(
+                error_code="v2_fingerprint_mismatch",
+                reason="向量模型指纹不匹配",
+            )
+        # 探测成功不代表向量重新加载成功，创建任务前仍须检查实际存储。
+        return {
+            "success": failure_stage == "reload",
+            "report": {"ok": failure_stage == "reload", "message": "Embedding 请求超时"},
+        }
+
+    recovery = AsyncMock(side_effect=recover)
+    monkeypatch.setattr(kernel, "initialize", AsyncMock())
+    monkeypatch.setattr(kernel, "_recover_embedding_once", recovery)
+
+    with pytest.raises(ValueError) as exc_info:
+        await admin(action=action, text="待处理内容")
+
+    message = str(exc_info.value)
+    if failure_stage == "probe":
+        assert "Embedding 请求超时" in message
+    else:
+        assert kernel._vector_health["error_code"] in message
+        assert kernel._vector_health["reason"] in message
+    creator.assert_not_awaited()
+    if initial_pending:
+        recovery.assert_awaited_once()
+    else:
+        recovery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tuning", [True, False])
+async def test_import_and_tuning_queries_do_not_probe_pending_vector_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tuning: bool,
+) -> None:
+    kernel = SDKMemoryKernel(plugin_root=Path.cwd(), config={})
+    kernel._vector_health.update(
+        error_code="embedding_fingerprint_unavailable",
+        reason="等待模型指纹验证",
+    )
+    manager = SimpleNamespace(list_tasks=AsyncMock(return_value=[]))
+    if tuning:
+        kernel.retrieval_tuning_manager = manager  # type: ignore[assignment]
+        admin = kernel.memory_tuning_admin
+    else:
+        kernel.import_task_manager = manager  # type: ignore[assignment]
+        admin = kernel.memory_import_admin
+    recovery = AsyncMock()
+    monkeypatch.setattr(kernel, "initialize", AsyncMock())
+    monkeypatch.setattr(kernel, "_recover_embedding_once", recovery)
+
+    result = await admin(action="list_tasks" if tuning else "list")
+
+    assert result == {"success": True, "items": [], "count": 0}
+    recovery.assert_not_awaited()
 
 
 def test_dual_vector_reload_reports_temporarily_unavailable_embedding_fingerprint(
