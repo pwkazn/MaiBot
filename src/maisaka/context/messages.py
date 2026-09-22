@@ -265,9 +265,7 @@ def _render_components_for_browser(
     for component in components:
         if isinstance(component, ForwardNodeComponent):
             nested_path = [*parent_path, nested_component_index]
-            rendered_parts.append(
-                f"[嵌套转发消息，path={nested_path}，可再次调用 view_forward_message 展开]"
-            )
+            rendered_parts.append(f"[嵌套转发消息，path={nested_path}，可再次调用 view_forward_message 展开]")
             nested_component_index += 1
             continue
 

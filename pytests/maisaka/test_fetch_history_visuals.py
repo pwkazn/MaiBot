@@ -17,16 +17,19 @@ from src.common.data_models.message_component_data_model import (
     StandardMessageComponents,
     TextComponent,
 )
-from src.llm_models.payload_content.context_item import ContextImagePart, ContextTextPart, UserMessageItem, get_item_text
+from src.llm_models.payload_content.context_item import (
+    ContextImagePart,
+    ContextTextPart,
+    UserMessageItem,
+    get_item_text,
+)
 from src.maisaka.context.message_adapter import build_visible_text_from_sequence
 from src.maisaka.context.messages import LLMContextMessage, SessionBackedMessage
 from src.maisaka.focus.runtime_mixin import MaisakaFocusRuntimeMixin
 from src.maisaka.reasoning_engine import MaisakaReasoningEngine
 
 
-_PNG_BYTES = b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY1cAAAAASUVORK5CYII="
-)
+_PNG_BYTES = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY1cAAAAASUVORK5CYII=")
 
 
 class _FetchHistoryRuntime(MaisakaFocusRuntimeMixin):

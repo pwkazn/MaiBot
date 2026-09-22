@@ -1,4 +1,4 @@
-﻿"""Focus-mode helpers for the Maisaka runtime."""
+"""Focus-mode helpers for the Maisaka runtime."""
 
 from __future__ import annotations
 
@@ -183,10 +183,7 @@ class MaisakaFocusRuntimeMixin:
 
         from src.chat.heart_flow.heartflow_manager import heartflow_manager
 
-        running_sessions = [
-            runtime.chat_stream
-            for runtime in heartflow_manager.heartflow_chat_list.values()
-        ]
+        running_sessions = [runtime.chat_stream for runtime in heartflow_manager.heartflow_chat_list.values()]
         return focus_mode_manager.resolve_session_from_args(arguments, running_sessions)
 
     def _maybe_schedule_focus_cooldown_wakeup(self, *, trigger_session_id: str) -> None:
@@ -244,7 +241,9 @@ class MaisakaFocusRuntimeMixin:
                 is_group_chat=runtime.chat_stream.is_group_session,
             ):
                 continue
-            if trigger_session_id and not focus_mode_manager.is_same_focus_scope(runtime.session_id, trigger_session_id):
+            if trigger_session_id and not focus_mode_manager.is_same_focus_scope(
+                runtime.session_id, trigger_session_id
+            ):
                 continue
             if runtime._agent_state == runtime._STATE_RUNNING:
                 continue
@@ -310,13 +309,9 @@ class MaisakaFocusRuntimeMixin:
         wakeup_timestamp = datetime.now()
         wakeup_id = f"focus_{wakeup_reason}:{int(time.time() * 1000)}"
         if wakeup_reason == "at":
-            reason_text = (
-                f"{trigger_name} 有人 @ {bot_name}，已无视 focus_cool_time 强制触发一次 Focus 模式思考。"
-            )
+            reason_text = f"{trigger_name} 有人 @ {bot_name}，已无视 focus_cool_time 强制触发一次 Focus 模式思考。"
         else:
-            reason_text = (
-                f"Focus 模式冷却时间已到，且 {trigger_name} 有尚未进入 Maisaka 决策的新消息。"
-            )
+            reason_text = f"Focus 模式冷却时间已到，且 {trigger_name} 有尚未进入 Maisaka 决策的新消息。"
         wakeup_notice = (
             f'<focus_cooldown_wakeup trigger_chat_id="{escape(trigger_session_id, quote=True)}" '
             f'focus_cool_time="{focus_mode_manager.get_focus_cool_time():.0f}" '
@@ -373,8 +368,7 @@ class MaisakaFocusRuntimeMixin:
 
         running_runtimes = sorted(
             heartflow_manager.heartflow_chat_list.values(),
-            key=lambda runtime: runtime.chat_stream.last_active_timestamp
-            or runtime.chat_stream.created_timestamp,
+            key=lambda runtime: runtime.chat_stream.last_active_timestamp or runtime.chat_stream.created_timestamp,
             reverse=True,
         )
         bot_name = global_config.bot.nickname.strip()
@@ -437,10 +431,7 @@ class MaisakaFocusRuntimeMixin:
                     event_type="unread_count",
                     chat_attrs=chat_attrs,
                     extra_attrs=[f'threshold="{FOCUS_EVENT_UNREAD_COUNT_THRESHOLD}"'],
-                    reason=(
-                        f"未读（未决策消息）消息数 {unread_count} "
-                        f"已达到阈值 {FOCUS_EVENT_UNREAD_COUNT_THRESHOLD}"
-                    ),
+                    reason=(f"未读（未决策消息）消息数 {unread_count} 已达到阈值 {FOCUS_EVENT_UNREAD_COUNT_THRESHOLD}"),
                     latest_messages=latest_messages,
                 )
 
@@ -680,11 +671,7 @@ class MaisakaFocusRuntimeMixin:
         target_unread_count = target_runtime._get_pending_message_count()
         switch_new_messages = target_runtime._get_focus_switch_new_messages(limit=FOCUS_SWITCH_NEW_MESSAGE_LIMIT)
         copied_history = deepcopy(
-            [
-                message
-                for message in self._chat_history
-                if message.source not in FOCUS_WAKEUP_SOURCE_KINDS
-            ]
+            [message for message in self._chat_history if message.source not in FOCUS_WAKEUP_SOURCE_KINDS]
         )
         recent_context_messages = await target_runtime.build_session_messages_as_user_history(
             switch_new_messages,
