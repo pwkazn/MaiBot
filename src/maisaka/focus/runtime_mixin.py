@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime
 from html import escape
-from typing import Any, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 import asyncio
 import time
@@ -26,6 +26,7 @@ from src.maisaka.context.messages import (
     ToolResultMessage,
 )
 from src.maisaka.mode_policy import is_idle_cycle_reason
+
 from .manager import FocusTargetResolution, focus_mode_manager
 
 FOCUS_SWITCH_NEW_MESSAGE_LIMIT = 20
@@ -70,8 +71,9 @@ class MaisakaFocusRuntimeMixin:
         *,
         source_kind: str = "user",
         existing_history: Optional[Sequence[LLMContextMessage]] = None,
-    ) -> list[LLMContextMessage]:
-        """Build recalled real messages as normal planner user messages."""
+        allow_visual: bool = True,
+    ) -> List[LLMContextMessage]:
+        """将召回消息构造为普通 user 消息，并传递是否允许加载和发送视觉内容。"""
 
         existing_messages = self._chat_history if existing_history is None else existing_history
         seen_message_ids = {
@@ -79,12 +81,16 @@ class MaisakaFocusRuntimeMixin:
             for history_message in existing_messages
             if str(getattr(history_message, "message_id", "") or "").strip()
         }
-        history_messages: list[LLMContextMessage] = []
+        history_messages: List[LLMContextMessage] = []
         for message in messages:
             message_id = str(message.message_id or "").strip()
             if not message_id or message_id in seen_message_ids:
                 continue
-            history_message = await self._reasoning_engine._build_history_message(message, source_kind=source_kind)
+            history_message = await self._reasoning_engine._build_history_message(
+                message,
+                source_kind=source_kind,
+                allow_visual=allow_visual,
+            )
             if history_message is None:
                 continue
             history_messages.append(history_message)
@@ -594,14 +600,16 @@ class MaisakaFocusRuntimeMixin:
         self,
         *,
         num: int,
-    ) -> tuple[str, dict[str, Any], list[LLMContextMessage]]:
-        """Fetch current-chat stream messages that are not already in Maisaka history."""
+    ) -> Tuple[str, Dict[str, Any], List[LLMContextMessage]]:
+        """仅以文字召回当前聊天流中尚未进入 Maisaka 上下文的消息。"""
 
         safe_num = min(50, max(1, int(num)))
         fetched_messages = self._get_focus_fetch_history_messages(limit=safe_num)
+        # 历史召回仅补充文字和已有识别结果，避免批量加载图片并内联到模型请求。
         post_history_messages = await self.build_session_messages_as_user_history(
             fetched_messages,
             source_kind="user",
+            allow_visual=False,
         )
 
         chat_session = self.chat_stream
