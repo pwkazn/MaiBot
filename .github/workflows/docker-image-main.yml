@@ -10,18 +10,17 @@ on:
       - "v*"
       - "*.*.*"
       - "*.*.*-*"
-  workflow_dispatch: # 允许手动触发工作流
-    inputs:
-      branch:
-        description: 'Branch to build'
-        required: false
-        default: 'main'
+  workflow_dispatch: # 手动构建时通过 Use workflow from 选择分支或标签
+
+permissions:
+  contents: read
 
 # Workflow's jobs
 jobs:
   build-amd64:
     name: Build AMD64 Image
     runs-on: ubuntu-24.04
+    environment: secrets
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
@@ -72,6 +71,7 @@ jobs:
   build-arm64:
     name: Build ARM64 Image
     runs-on: ubuntu-24.04-arm
+    environment: secrets
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
@@ -122,6 +122,7 @@ jobs:
   create-manifest:
     name: Create Multi-Arch Manifest
     runs-on: ubuntu-24.04
+    environment: secrets
     needs:
       - build-amd64
       - build-arm64
