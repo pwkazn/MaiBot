@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape
 from typing import Sequence
 
 from src.chat.message_receive.message import SessionMessage
@@ -56,19 +57,16 @@ def _resolve_candidate(
     clean_platform = _clean_text(platform)
     clean_user_id = _clean_text(user_id)
     clean_person_name = _clean_text(person_name)
+    if not clean_platform or not clean_user_id:
+        return None
     if _is_bot_user_id(clean_platform, clean_user_id):
         return None
 
     try:
-        if clean_user_id:
-            person_id = resolve_person_id_for_memory(
-                platform=clean_platform,
-                user_id=clean_user_id,
-            )
-        elif clean_person_name:
-            person_id = resolve_person_id_for_memory(person_name=clean_person_name)
-        else:
-            person_id = ""
+        person_id = resolve_person_id_for_memory(
+            platform=clean_platform,
+            user_id=clean_user_id,
+        )
     except Exception as exc:
         logger.debug(
             f"解析人物画像候选失败: source={source} user_id={clean_user_id!r} name={clean_person_name!r} err={exc}"
@@ -209,14 +207,17 @@ def _format_profile_reference_block(blocks: Sequence[str]) -> str:
         return ""
     return (
         "【人物画像-内部参考】\n"
-        "以下内容仅供内部推理，不要向用户逐字复述。\n\n"
+        "以下内容仅供内部推理，以 person_id 识别人物，昵称仅用于称呼；对外回复优先使用昵称，不要逐字复述。\n\n"
         f"{joined_blocks}\n\n"
         "使用时把它当作对当前人物的背景理解；若与当前对话冲突，以当前对话为准。"
     )
 
 
-def _format_profile_person_block(display_name: str, profile_text: str) -> str:
-    return f"{display_name}：\n  {_truncate_profile_text(profile_text)}"
+def _format_profile_person_block(*, person_id: str, display_name: str, profile_text: str) -> str:
+    return (
+        f'person_id="{escape(person_id, quote=True)}" name="{escape(display_name, quote=True)}"：\n'
+        f"  {_truncate_profile_text(profile_text)}"
+    )
 
 
 async def build_person_profile_injection_messages(
@@ -265,7 +266,13 @@ async def build_person_profile_injection_messages(
             continue
 
         display_name = _profile_display_name(candidate, payload)
-        blocks.append(_format_profile_person_block(display_name, profile_text))
+        blocks.append(
+            _format_profile_person_block(
+                person_id=candidate.person_id,
+                display_name=display_name,
+                profile_text=profile_text,
+            )
+        )
 
     reference_block = _format_profile_reference_block(blocks)
     return [reference_block] if reference_block else []

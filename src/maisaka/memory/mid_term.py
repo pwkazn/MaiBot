@@ -5,7 +5,7 @@ from datetime import datetime
 from hashlib import sha1
 from html import escape
 from math import sqrt
-from typing import Any, Sequence
+from typing import Any, Dict, List, Sequence
 
 from json_repair import repair_json
 from pydantic import BaseModel
@@ -31,11 +31,14 @@ from src.llm_models.payload_content.context_item import (
     UserMessageItem,
     get_item_text,
 )
+from src.maisaka.context.identity import ParticipantIdentity, build_participant_identity, format_participant_reference
 from src.maisaka.context.messages import (
+    FOCUS_WAKEUP_SOURCE_KINDS,
     ComplexSessionMessage,
     LLMContextMessage,
     ReferenceMessage,
     ReferenceMessageType,
+    SessionBackedMessage,
     build_context_items_from_history_entry,
 )
 from src.maisaka.display.prompt_cli_renderer import PromptCLIVisualizer
@@ -581,36 +584,45 @@ def _build_time_range(messages: Sequence[LLMContextMessage]) -> str:
     return f"{start_time.strftime('%Y-%m-%d %H:%M:%S')} ~ {end_time.strftime('%Y-%m-%d %H:%M:%S')}"
 
 
-def _collect_participants(messages: Sequence[LLMContextMessage]) -> list[str]:
-    participants: list[str] = []
-    seen: set[str] = set()
+def _collect_participants(messages: Sequence[LLMContextMessage]) -> List[str]:
+    # 按稳定身份合并改名记录，保留最近的称呼；同名的不同用户仍分别保留。
+    participants: Dict[str, str] = {}
     for message in messages:
-        participant = _resolve_participant_name(message)
-        if not participant or participant in seen:
+        participant = _resolve_participant_identity(message)
+        if participant is None:
             continue
-        seen.add(participant)
-        participants.append(participant)
-    return participants
-
-
-def _resolve_participant_name(message: LLMContextMessage) -> str:
-    original_message = getattr(message, "original_message", None)
-    message_info = getattr(original_message, "message_info", None)
-    user_info = getattr(message_info, "user_info", None)
-    if user_info is not None:
-        user_name = (
-            getattr(user_info, "user_cardname", None)
-            or getattr(user_info, "user_nickname", None)
-            or getattr(user_info, "user_id", None)
+        participants[participant.person_id] = format_participant_reference(
+            platform=participant.platform,
+            user_id=participant.user_id,
+            nickname=participant.nickname,
+            group_card=participant.group_card,
         )
-        if str(user_name or "").strip():
-            return str(user_name).strip()
+    return list(participants.values())
 
-    if message.role == "assistant":
-        return "麦麦"
-    if isinstance(message, ComplexSessionMessage) and message.source_kind == "optimized_tool_history":
-        return "历史工具调用"
-    return str(message.source or "").strip()
+
+def _resolve_participant_identity(message: LLMContextMessage) -> ParticipantIdentity | None:
+    # assistant 角色也包括内部推理和工具调用，只有真实消息元数据能确定发送者身份。
+    if not isinstance(message, SessionBackedMessage):
+        return None
+    # Focus 通知复用了 SessionMessage 容器，其中的系统发送者不是真实聊天参与者。
+    if message.source_kind in FOCUS_WAKEUP_SOURCE_KINDS or message.source_kind == "focus_switch":
+        return None
+    original_message = message.original_message
+    if original_message is None:
+        # 成功发送后的自身写回可以携带已确认账号；没有账号依据的合成记录不猜测身份。
+        identity = message.participant_identity
+        if message.source_kind == "guided_reply" and identity is not None and identity.person_id:
+            return identity
+        return None
+    user_info = original_message.message_info.user_info
+    if not original_message.platform.strip() or not user_info.user_id.strip():
+        return None
+    return build_participant_identity(
+        platform=original_message.platform,
+        user_id=user_info.user_id,
+        nickname=user_info.user_nickname,
+        group_card=user_info.user_cardname or "",
+    )
 
 
 def _parse_summary_response(response: str) -> MidTermMemorySummaryModel | None:

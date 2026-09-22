@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.tooling import ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolSpec
+from src.person_info.person_info import get_person_name_by_person_id, resolve_person_id_for_memory
 from src.services.memory_service import memory_service
 
 from .context import BuiltinToolRuntimeContext
@@ -23,11 +24,11 @@ def get_tool_spec(*, enabled: bool = True) -> ToolSpec:
             "properties": {
                 "person_id": {
                     "type": "string",
-                    "description": "内部人物ID；明确给出时填。",
+                    "description": "人物稳定 ID；优先填写上下文中的 person_id。",
                 },
                 "person_name": {
                     "type": "string",
-                    "description": "名称/昵称/关键词；通常填这个。",
+                    "description": "仅在不知道 person_id 时按完整名称查找；重名或未知名称会报错。",
                 },
                 "limit": {
                     "type": "integer",
@@ -54,8 +55,8 @@ def _extract_profile_text(payload: Dict[str, Any]) -> str:
     return str(payload.get("profile_text") or payload.get("summary") or "").strip()
 
 
-def _extract_traits(profile_text: str) -> list[str]:
-    traits: list[str] = []
+def _extract_traits(profile_text: str) -> List[str]:
+    traits: List[str] = []
     for line in profile_text.splitlines():
         clean_line = line.strip().strip("-").strip()
         if clean_line:
@@ -104,18 +105,17 @@ async def handle_tool(
 
     limit = _normalize_limit(invocation.arguments.get("limit"))
     try:
-        if person_id:
-            payload = await memory_service.profile_admin(
-                action="query",
-                person_id=person_id,
-                limit=limit,
-            )
-        else:
-            payload = await memory_service.profile_admin(
-                action="query",
-                person_keyword=person_name,
-                limit=limit,
-            )
+        if not person_id:
+            # 在宿主侧完成唯一性校验，避免下游按名称取首条人物记录。
+            person_id = resolve_person_id_for_memory(person_name=person_name)
+            if not person_id:
+                raise ValueError(f"未找到人物“{person_name}”，请使用上下文中的 person_id。")
+        person_name = get_person_name_by_person_id(person_id) or person_name
+        payload = await memory_service.profile_admin(
+            action="query",
+            person_id=person_id,
+            limit=limit,
+        )
     except Exception as exc:
         return tool_ctx.build_failure_result(
             invocation.tool_name,
@@ -126,6 +126,13 @@ async def handle_tool(
         return tool_ctx.build_failure_result(
             invocation.tool_name,
             "人物画像查询失败：invalid_payload",
+        )
+
+    resolved_person_id = str(payload.get("person_id") or person_id).strip()
+    if resolved_person_id != person_id:
+        return tool_ctx.build_failure_result(
+            invocation.tool_name,
+            f"人物画像返回的 person_id={resolved_person_id} 与请求的 person_id={person_id} 不一致。",
         )
 
     structured_content = _build_structured_content(
@@ -145,8 +152,9 @@ async def handle_tool(
     profile_text = structured_content["summary"]
     if not profile_text:
         profile_text = "未找到可用的人物画像。"
+    display_name = structured_content["person_name"] or "未记录昵称"
     return tool_ctx.build_success_result(
         invocation.tool_name,
-        profile_text,
+        f"人物：person_id={person_id}；昵称={display_name}\n{profile_text}",
         structured_content=structured_content,
     )

@@ -22,6 +22,7 @@ def test_replyer_keeps_using_personality(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(global_config.personality, "behavior_style", "这段行为风格只应提供给 Planner。")
 
     generator = object.__new__(BaseMaisakaReplyGenerator)
+    generator.chat_stream = None
     prompt = generator._build_personality_prompt()
 
     assert "这段人格只应提供给 Replyer。" in prompt

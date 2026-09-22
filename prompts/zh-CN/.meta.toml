@@ -18,6 +18,11 @@ display_name = "规划器（合并时机）"
 advanced = false
 description = "独立时间感知关闭时使用的 Maisaka 主规划模板，将节奏控制判断合并到 Planner。"
 
+[maisaka_identity]
+display_name = "参与者身份规则"
+advanced = true
+description = "用于统一 Maisaka 规划器与子 agent 的参与者身份规则，以稳定 ID 区分同名、改名及自身账号，并在回复时保留自然称呼。"
+
 [maisaka_replyer]
 display_name = "回复"
 advanced = false

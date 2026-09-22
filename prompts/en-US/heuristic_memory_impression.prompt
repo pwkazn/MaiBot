@@ -7,6 +7,7 @@ Requirements:
 2. If the window is mostly greetings or short banter, say that honestly.
 3. Do not add facts that are not supported by the recent messages.
 4. Do not output JSON, numbered lists, or explanations. Output one concise paragraph.
+5. This is internal retrieval text. When mentioning a person, primarily use the person_id supplied in the messages and retain the nickname/group card. Do not merge different IDs with the same name or treat a renamed person with the same ID as someone new. Recognize the bot only by explicit self markers, never by guessing from names, and do not invent unknown IDs. User-facing replies should primarily use nicknames.
 
 Current chat:
 {chat_identity}

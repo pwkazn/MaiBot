@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from html import escape
 from time import time
-from typing import Any, Sequence
+from typing import Any, List, Sequence
 
 from src.chat.message_receive.chat_manager import BotChatSession, chat_manager
 from src.chat.message_receive.message import SessionMessage
@@ -13,6 +14,7 @@ from src.common.logger import get_logger
 from src.common.message_repository import count_messages, find_messages
 from src.common.prompt_i18n import load_prompt
 from src.config.config import global_config
+from src.maisaka.context.identity import format_participant_reference
 from src.person_info.person_info import get_person_id
 from src.services.llm_service import LLMServiceClient
 from src.services.memory_service import MemoryHit, memory_service
@@ -214,7 +216,7 @@ class HeuristicMemoryInjector:
             if dedup_key in seen_hashes:
                 continue
             seen_hashes.add(dedup_key)
-            filtered.append(hit)
+            filtered.append(replace(hit, source=resolved_source) if resolved_source else hit)
             if len(filtered) >= limit:
                 break
         return filtered
@@ -358,27 +360,51 @@ class HeuristicMemoryInjector:
 
     @classmethod
     def _format_message_window(cls, messages: Sequence[SessionMessage]) -> str:
-        lines: list[str] = []
+        lines: List[str] = []
         for message in messages:
-            sender = cls._message_sender_name(message)
-            text = str(getattr(message, "processed_plain_text", "") or "").strip()
+            sender = cls._message_sender_reference(message)
+            text = (message.processed_plain_text or "").strip()
             if not text:
                 continue
             text = text.replace("\r", " ").replace("\n", " ")
             if len(text) > 220:
                 text = text[:220].rstrip() + "..."
             lines.append(f"- {sender}: {text}")
+            # 正文保留自然语言，同时单列 @ 和回复目标，避免检索印象将同名人物混为一人。
+            lines.extend(f"  {reference}" for reference in cls._message_target_references(message))
         return "\n".join(lines) if lines else "no text messages available"
 
     @staticmethod
-    def _message_sender_name(message: SessionMessage) -> str:
+    def _message_sender_reference(message: SessionMessage) -> str:
         user_info = message.message_info.user_info
-        return str(
-            getattr(user_info, "user_cardname", "")
-            or getattr(user_info, "user_nickname", "")
-            or getattr(user_info, "user_id", "")
-            or "unknown_user"
-        ).strip()
+        return format_participant_reference(
+            platform=message.platform,
+            user_id=user_info.user_id,
+            nickname=user_info.user_nickname,
+            group_card=user_info.user_cardname or "",
+        )
+
+    @staticmethod
+    def _message_target_references(message: SessionMessage) -> List[str]:
+        references: List[str] = []
+        for component in message.raw_message.components:
+            if isinstance(component, AtComponent):
+                reference = format_participant_reference(
+                    platform=message.platform,
+                    user_id=component.target_user_id,
+                    nickname=component.target_user_nickname or "",
+                    group_card=component.target_user_cardname or "",
+                )
+                references.append(f"提及: {reference}")
+            elif isinstance(component, ReplyComponent) and component.target_message_sender_id:
+                reference = format_participant_reference(
+                    platform=message.platform,
+                    user_id=component.target_message_sender_id,
+                    nickname=component.target_message_sender_nickname or "",
+                    group_card=component.target_message_sender_cardname or "",
+                )
+                references.append(f"引用发送者: {reference}")
+        return references
 
     @staticmethod
     def _format_reference(hits: Sequence[MemoryHit], *, max_chars: int) -> str:
@@ -386,7 +412,7 @@ class HeuristicMemoryInjector:
             return ""
         lines = [
             HEURISTIC_MEMORY_REFERENCE_MARKER,
-            "Internal long-term memory recalled from the current chat impression. Use it only as reasoning context; do not quote it verbatim to the user.",
+            "根据当前聊天印象召回的长期记忆，仅供内部推理。以 person_id 识别人物，对外回复优先使用昵称，不要逐字复述。",
             "",
         ]
         for index, hit in enumerate(hits, start=1):
@@ -395,7 +421,28 @@ class HeuristicMemoryInjector:
                 continue
             if len(content) > 180:
                 content = content[:180].rstrip() + "..."
-            lines.append(f"{index}. {content}")
+            metadata = hit.metadata
+            person_ids: List[str] = []
+            metadata_person_id = metadata.get("person_id")
+            if isinstance(metadata_person_id, str) and metadata_person_id.strip():
+                person_ids.append(metadata_person_id.strip())
+            metadata_person_ids = metadata.get("person_ids")
+            if isinstance(metadata_person_ids, list):
+                for person_id in metadata_person_ids:
+                    if not isinstance(person_id, str):
+                        continue
+                    clean_person_id = person_id.strip()
+                    if clean_person_id and clean_person_id not in person_ids:
+                        person_ids.append(clean_person_id)
+            source = str(metadata.get("source") or hit.source).strip()
+            if source.startswith(_SOURCE_PERSON_FACT_PREFIX):
+                person_id = source[len(_SOURCE_PERSON_FACT_PREFIX) :].strip()
+                if person_id and person_id not in person_ids:
+                    person_ids.append(person_id)
+            identity_text = " ".join(
+                f'<person person_id="{escape(person_id, quote=True)}"/>' for person_id in person_ids
+            )
+            lines.append(f"{index}. {identity_text} {content}" if identity_text else f"{index}. {content}")
 
         reference = "\n".join(lines).strip()
         if len(reference) <= max_chars:

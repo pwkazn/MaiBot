@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from io import BytesIO
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, Tuple
 
 from PIL import Image as PILImage
 
@@ -41,6 +41,8 @@ from src.llm_models.payload_content.context_item import (
     get_response_tool_calls,
 )
 from src.llm_models.payload_content.tool_option import ToolCall
+
+from .identity import ParticipantIdentity, format_participant_reference
 
 FORWARD_PREVIEW_LIMIT = 4
 FOCUS_COOLDOWN_WAKEUP_SOURCE = "focus_cooldown_wakeup"
@@ -110,17 +112,25 @@ def _append_reply_component(builder: ContextItemBuilder, component: ReplyCompone
     return False
 
 
-def _render_at_component_text(component: AtComponent) -> str:
-    """灏?AtComponent 娓叉煋涓烘枃鏈舰寮忋€?"""
+def _render_at_component_text(component: AtComponent, *, platform: str = "", prefer_nickname: bool = False) -> str:
+    """为提及对象保留身份，回复视图优先显示称呼。"""
 
     target_name = component.target_user_cardname or component.target_user_nickname or component.target_user_id
-    return f"@{target_name}".strip()
+    identity = format_participant_reference(
+        platform=platform,
+        user_id=component.target_user_id,
+        nickname=component.target_user_nickname or "",
+        group_card=component.target_user_cardname or "",
+    )
+    return f"@{target_name} {identity}" if prefer_nickname else f"@{identity}"
 
 
-def _append_at_component(builder: ContextItemBuilder, component: AtComponent) -> bool:
-    """灏?@ 缁勪欢杞崲涓烘枃鏈苟鍐欏叆 LLM 娑堟伅銆?"""
+def _append_at_component(
+    builder: ContextItemBuilder, component: AtComponent, *, platform: str = "", prefer_nickname: bool = False
+) -> bool:
+    """将带身份的 @ 组件写入模型上下文。"""
 
-    rendered_text = _render_at_component_text(component)
+    rendered_text = _render_at_component_text(component, platform=platform, prefer_nickname=prefer_nickname)
     if not rendered_text:
         return False
 
@@ -143,7 +153,7 @@ async def build_full_complex_message_content(message: SessionMessage, path: Sequ
             enable_voice_transcription=False,
         )
 
-    full_content = _build_complex_message_full_text(message.raw_message, path)
+    full_content = _build_complex_message_full_text(message.raw_message, path, platform=message.platform)
     if full_content:
         return full_content
 
@@ -155,10 +165,12 @@ async def build_full_complex_message_content(message: SessionMessage, path: Sequ
 def build_full_complex_message_content_from_sequence(
     message_sequence: MessageSequence,
     path: Sequence[int] = (),
+    *,
+    platform: str = "",
 ) -> str:
     """从消息组件序列按路径构造转发消息当前层级的文本内容。"""
 
-    return _build_complex_message_full_text(message_sequence, path)
+    return _build_complex_message_full_text(message_sequence, path, platform=platform)
 
 
 def _prepare_unresolved_visual_components(components: Sequence[StandardMessageComponents]) -> bool:
@@ -192,7 +204,9 @@ def _prepare_unresolved_visual_components(components: Sequence[StandardMessageCo
     return found_unresolved
 
 
-def _build_complex_message_full_text(message_sequence: MessageSequence, path: Sequence[int]) -> str:
+def _build_complex_message_full_text(
+    message_sequence: MessageSequence, path: Sequence[int], *, platform: str = ""
+) -> str:
     """构造转发消息浏览工具返回的当前层级文本。"""
 
     root_components = [
@@ -200,10 +214,11 @@ def _build_complex_message_full_text(message_sequence: MessageSequence, path: Se
     ]
     if path:
         target_component = _resolve_forward_component(root_components, path)
-        return _build_forward_full_text(target_component, tuple(path))
+        return _build_forward_full_text(target_component, tuple(path), platform=platform)
 
     return "\n".join(
-        _build_forward_full_text(component, (index,)) for index, component in enumerate(root_components)
+        _build_forward_full_text(component, (index,), platform=platform)
+        for index, component in enumerate(root_components)
     ).strip()
 
 
@@ -237,17 +252,23 @@ def _collect_nested_forward_components(component: ForwardNodeComponent) -> list[
     ]
 
 
-def _build_forward_full_text(component: ForwardNodeComponent, path: tuple[int, ...]) -> str:
+def _build_forward_full_text(component: ForwardNodeComponent, path: Tuple[int, ...], *, platform: str = "") -> str:
     """构造合并转发消息的当前层级文本。"""
 
     forward_lines = ["【合并转发消息:"]
     nested_component_index = 0
     for node in component.forward_components:
-        sender_name = node.user_cardname or node.user_nickname or node.user_id or "未知用户"
+        sender_name = format_participant_reference(
+            platform=platform,
+            user_id=node.user_id or "",
+            nickname=str(node.user_nickname),
+            group_card=node.user_cardname or "",
+        )
         content, nested_component_index = _render_components_for_browser(
             node.content,
             path,
             nested_component_index,
+            platform=platform,
         )
         forward_lines.append(f"【{sender_name}】: {content or '[空消息]'}")
     forward_lines.append("】")
@@ -256,9 +277,11 @@ def _build_forward_full_text(component: ForwardNodeComponent, path: tuple[int, .
 
 def _render_components_for_browser(
     components: Sequence[StandardMessageComponents],
-    parent_path: tuple[int, ...],
+    parent_path: Tuple[int, ...],
     nested_component_index: int,
-) -> tuple[str, int]:
+    *,
+    platform: str = "",
+) -> Tuple[str, int]:
     """渲染当前层级组件，并为嵌套转发提供下一次展开路径。"""
 
     rendered_parts: list[str] = []
@@ -269,7 +292,7 @@ def _render_components_for_browser(
             nested_component_index += 1
             continue
 
-        rendered_text = _render_component_for_prompt(component)
+        rendered_text = _render_component_for_prompt(component, platform=platform)
         normalized_text = _normalize_inline_text(rendered_text)
         if normalized_text:
             rendered_parts.append(normalized_text)
@@ -277,18 +300,18 @@ def _render_components_for_browser(
     return " ".join(rendered_parts).strip(), nested_component_index
 
 
-def _build_complex_message_prompt_text(message_sequence: MessageSequence) -> str:
+def _build_complex_message_prompt_text(message_sequence: MessageSequence, *, platform: str = "") -> str:
     """将转发消息转换为适合注入 Prompt 的摘要文本。"""
 
     prompt_parts: list[str] = []
     for component in message_sequence.components:
-        rendered_text = _render_component_for_prompt(component)
+        rendered_text = _render_component_for_prompt(component, platform=platform)
         if rendered_text:
             prompt_parts.append(rendered_text)
     return "\n".join(part for part in prompt_parts if part).strip()
 
 
-def _render_component_for_prompt(component: StandardMessageComponents) -> str:
+def _render_component_for_prompt(component: StandardMessageComponents, *, platform: str = "") -> str:
     """将单个组件渲染为 Prompt 文本。"""
 
     if isinstance(component, TextComponent):
@@ -307,13 +330,13 @@ def _render_component_for_prompt(component: StandardMessageComponents) -> str:
         return component.to_plain_text()
 
     if isinstance(component, AtComponent):
-        return _render_at_component_text(component)
+        return _render_at_component_text(component, platform=platform)
 
     if isinstance(component, ReplyComponent):
         return ""
 
     if isinstance(component, ForwardNodeComponent):
-        return _build_forward_preview_block(component)
+        return _build_forward_preview_block(component, platform=platform)
 
     if isinstance(component, DictComponent):
         raw_type = component.data.get("type") if isinstance(component.data, dict) else None
@@ -324,15 +347,20 @@ def _render_component_for_prompt(component: StandardMessageComponents) -> str:
     return ""
 
 
-def _build_forward_preview_block(component: ForwardNodeComponent) -> str:
+def _build_forward_preview_block(component: ForwardNodeComponent, *, platform: str = "") -> str:
     """构造转发消息的预览块。"""
 
     preview_lines = ["[消息类型]转发消息", f"预览前{FORWARD_PREVIEW_LIMIT}条："]
     preview_nodes = component.forward_components[:FORWARD_PREVIEW_LIMIT]
 
     for node in preview_nodes:
-        sender_name = node.user_cardname or node.user_nickname or node.user_id or "未知用户"
-        content = _render_components_inline(node.content) or "[空消息]"
+        sender_name = format_participant_reference(
+            platform=platform,
+            user_id=node.user_id or "",
+            nickname=str(node.user_nickname),
+            group_card=node.user_cardname or "",
+        )
+        content = _render_components_inline(node.content, platform=platform) or "[空消息]"
         preview_lines.append(f"{sender_name}：{content}")
 
     total_count = len(component.forward_components)
@@ -343,7 +371,7 @@ def _build_forward_preview_block(component: ForwardNodeComponent) -> str:
     return "\n".join(preview_lines).strip()
 
 
-def _render_components_inline(components: Sequence[StandardMessageComponents]) -> str:
+def _render_components_inline(components: Sequence[StandardMessageComponents], *, platform: str = "") -> str:
     """将组件序列压缩为单行预览文本。"""
 
     rendered_parts: list[str] = []
@@ -352,7 +380,7 @@ def _render_components_inline(components: Sequence[StandardMessageComponents]) -
             rendered_parts.append("[转发消息]")
             continue
 
-        rendered_text = _render_component_for_prompt(component)
+        rendered_text = _render_component_for_prompt(component, platform=platform)
         normalized_text = _normalize_inline_text(rendered_text)
         if normalized_text:
             rendered_parts.append(normalized_text)
@@ -375,6 +403,8 @@ def _build_item_from_sequence(
     tool_call_id: Optional[str] = None,
     tool_name: Optional[str] = None,
     meta: ContextItemMeta | None = None,
+    platform: str = "",
+    prefer_nickname: bool = False,
 ) -> Optional[ContextItem]:
     """根据消息片段构造统一 Context Item。"""
     builder = ContextItemBuilder().set_role(role)
@@ -427,7 +457,10 @@ def _build_item_from_sequence(
             continue
 
         if isinstance(component, AtComponent):
-            has_content = _append_at_component(builder, component) or has_content
+            has_content = (
+                _append_at_component(builder, component, platform=platform, prefer_nickname=prefer_nickname)
+                or has_content
+            )
             continue
 
         if isinstance(component, ReplyComponent):
@@ -502,6 +535,10 @@ class SessionBackedMessage(LLMContextMessage):
     context_item_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     # 召回消息的仅文字策略需在后续渲染和识图文字刷新时持续生效。
     allow_visual: bool = field(default=True, kw_only=True)
+    # 回复副本只改变展示偏好，共享历史始终保持 ID 优先。
+    prefer_nickname: bool = field(default=False, kw_only=True)
+    # 无原始平台消息的自身写回也可携带已经确定的账号，避免从显示文本反解析身份。
+    participant_identity: Optional[ParticipantIdentity] = field(default=None, kw_only=True)
 
     @property
     def role(self) -> str:
@@ -516,12 +553,17 @@ class SessionBackedMessage(LLMContextMessage):
         return self.source_kind
 
     def to_context_item(self, enable_visual_message: bool = True) -> ContextItem | None:
+        platform = self.original_message.platform if self.original_message is not None else ""
+        if not platform and self.participant_identity is not None:
+            platform = self.participant_identity.platform
         return _build_item_from_sequence(
             RoleType.User,
             self.raw_message,
             self.processed_plain_text,
             enable_visual_message=enable_visual_message and self.allow_visual,
             meta=ContextItemMeta.create(item_id=self.context_item_id, timestamp=self.timestamp),
+            platform=platform,
+            prefer_nickname=self.prefer_nickname,
         )
 
     @classmethod
@@ -579,7 +621,7 @@ class ComplexSessionMessage(SessionBackedMessage):
     ) -> Optional["ComplexSessionMessage"]:
         """从真实 SessionMessage 构造复杂消息上下文消息。"""
 
-        prompt_text = _build_complex_message_prompt_text(session_message.raw_message)
+        prompt_text = _build_complex_message_prompt_text(session_message.raw_message, platform=session_message.platform)
         if not prompt_text:
             return None
 

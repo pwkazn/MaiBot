@@ -14,6 +14,7 @@ from src.common.data_models.message_component_data_model import (
     AtComponent,
     EmojiComponent,
     ImageComponent,
+    MessageSequence,
     ReplyComponent,
     TextComponent,
     VoiceComponent,
@@ -42,8 +43,15 @@ from src.llm_models.payload_content.context_item import (
     replace_output_projection,
 )
 from src.llm_models.payload_content.context_protocol import ContextProtocolMode
+from src.maisaka.context.identity import (
+    build_participant_identity,
+    format_bot_identity_context,
+    format_participant_reference,
+)
 from src.maisaka.context.message_adapter import parse_speaker_content
 from src.maisaka.context.messages import (
+    ComplexSessionMessage,
+    FOCUS_WAKEUP_SOURCE_KINDS,
     LLMContextMessage,
     ModelOutputContextMessage,
     ReferenceMessage,
@@ -51,7 +59,10 @@ from src.maisaka.context.messages import (
     ToolResultMessage,
     build_context_items_from_history_entry,
 )
-from src.maisaka.context.planner_messages import extract_quote_ids_from_message_sequence
+from src.maisaka.context.planner_messages import (
+    build_planner_user_prefix_from_session_message,
+    extract_quote_ids_from_message_sequence,
+)
 from src.maisaka.display.prompt_cli_renderer import PromptCLIVisualizer
 from src.maisaka.memory.mid_term import is_mid_term_memory_message
 from src.maisaka.visual.message_limiter import limit_latest_images_in_messages
@@ -115,6 +126,10 @@ class BaseMaisakaReplyGenerator:
             emotion_suffix = build_personality_emotion_suffix(global_config.experimental.emotion_trait)
             if emotion_suffix:
                 prompt_lines.append(emotion_suffix)
+            if self.chat_stream is not None:
+                own_identity = format_bot_identity_context(platform=self.chat_stream.platform, nickname=bot_name)
+                if own_identity:
+                    prompt_lines.append(own_identity)
             return "\n".join(prompt_lines)
         except Exception as exc:
             logger.warning(f"构建 Maisaka 人设提示词失败: {exc}")
@@ -157,7 +172,11 @@ class BaseMaisakaReplyGenerator:
     def _extract_guided_bot_reply(self, message: SessionBackedMessage) -> str:
         # 只能根据结构化来源字段判断是否为 bot 自身写回的历史消息，
         # 不能依赖昵称/群名片等可控文本，避免误判和提示注入。
-        if message.source_kind != "guided_reply":
+        original_message = message.original_message
+        if message.source_kind != "guided_reply" and (
+            original_message is None
+            or not is_bot_self(original_message.platform, original_message.message_info.user_info.user_id)
+        ):
             return ""
 
         plain_text = message.processed_plain_text.strip()
@@ -170,7 +189,13 @@ class BaseMaisakaReplyGenerator:
             return ""
 
         user_info = reply_message.message_info.user_info
-        sender_name = user_info.user_cardname or user_info.user_nickname or user_info.user_id
+        identity = build_participant_identity(
+            platform=reply_message.platform,
+            user_id=user_info.user_id,
+            nickname=user_info.user_nickname,
+            group_card=user_info.user_cardname or "",
+        )
+        sender_name = identity.display_name
         bot_name = global_config.bot.nickname.strip() or sender_name
         target_message_id = reply_message.message_id.strip() if reply_message.message_id else "未知"
         # target_time = reply_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
@@ -179,11 +204,33 @@ class BaseMaisakaReplyGenerator:
         if not target_content:
             target_content = "[无可见文本内容]"
 
-        if is_bot_self(reply_message.platform, user_info.user_id):
+        identity_reference = format_participant_reference(
+            platform=identity.platform,
+            user_id=identity.user_id,
+            nickname=identity.nickname,
+            group_card=identity.group_card,
+        )
+        identity_line = f"- 身份核对（仅用于区分参与者）：{identity_reference}"
+        # 发言内容有长度上限，提及对象的身份单独保留，避免重名或截断导致误认。
+        mention_identity_lines = [
+            "- 提及对象身份核对（仅用于区分参与者）："
+            + format_participant_reference(
+                platform=reply_message.platform,
+                user_id=component.target_user_id,
+                nickname=component.target_user_nickname or "",
+                group_card=component.target_user_cardname or "",
+            )
+            for component in reply_message.raw_message.components
+            if isinstance(component, AtComponent)
+        ]
+
+        if identity.is_self:
             return "\n".join(
                 [
                     f"你想要补充说明你自己（{bot_name}） 发送的 msg_id为 {target_message_id} 的消息，"
                     "你可以在这条目标消息的基础上补充发言，不要把你自己的发言当成别人的发言。",
+                    identity_line,
+                    *mention_identity_lines,
                     f"- 你之前的发言内容：{target_content}",
                 ]
             )
@@ -207,6 +254,8 @@ class BaseMaisakaReplyGenerator:
 
         target_lines = [
             f"你想要回复的消息是 {sender_name} 发送的 msg_id为 {target_message_id} 的消息，你这次要回复的就是这条目标消息，不要把其他历史消息当成当前回复对象。",
+            identity_line,
+            *mention_identity_lines,
         ]
         if quote_ids:
             target_lines.append(f"- quote={','.join(quote_ids)}")
@@ -566,10 +615,7 @@ class BaseMaisakaReplyGenerator:
         return system_prompt
 
     def _build_reply_instruction(self) -> str:
-        return (
-            "请自然地回复。不要输出多余说明、括号、@ 或额外标记，"
-            "只输出实际要发言的内容。"
-        )
+        return "请自然地回复。不要输出多余说明、括号、@ 或额外标记，只输出实际要发言的内容。"
 
     @staticmethod
     def _build_reply_reference_lines(reply_reason: str, reply_reference: str) -> List[str]:
@@ -646,6 +692,42 @@ class BaseMaisakaReplyGenerator:
             return ""
         return style_messages[normalized_reply_style]
 
+    @staticmethod
+    def _build_replyer_history_message(message: SessionBackedMessage) -> SessionBackedMessage:
+        """生成昵称优先的独立展示，保留稳定身份及已经加载的媒体。"""
+
+        original_message = message.original_message
+        if original_message is None:
+            return replace(message, prefer_nickname=True)
+
+        if isinstance(message, ComplexSessionMessage):
+            prefixed_text = message.prompt_text
+        else:
+            if not message.raw_message.components:
+                raise ValueError("真实聊天历史缺少消息身份前缀。")
+            first_component = message.raw_message.components[0]
+            if not isinstance(first_component, TextComponent):
+                raise ValueError("真实聊天历史缺少消息身份前缀。")
+            prefixed_text = first_component.text
+
+        # 只替换生成的消息头，不替换昵称或正文；昵称中的换行不应截断元信息。
+        header, separator, body = prefixed_text.partition(">\n")
+        if not prefixed_text.startswith("<message ") or not separator:
+            raise ValueError("真实聊天历史的消息身份前缀格式无效。")
+        prefix = build_planner_user_prefix_from_session_message(
+            original_message,
+            include_message_id=' msg_id="' in header,
+            include_chat_id=' chat_id="' in header,
+            is_self_message=message.source_kind == "guided_reply",
+            prefer_nickname=True,
+        )
+        if isinstance(message, ComplexSessionMessage):
+            return replace(message, prompt_text=f"{prefix}{body}", prefer_nickname=True)
+
+        # 其余组件只读共享，避免重建原始消息时丢失历史中已水合的图片二进制。
+        replyer_sequence = MessageSequence([TextComponent(f"{prefix}{body}"), *message.raw_message.components[1:]])
+        return replace(message, raw_message=replyer_sequence, prefer_nickname=True)
+
     def _build_history_messages(
         self,
         chat_history: List[LLMContextMessage],
@@ -666,7 +748,7 @@ class BaseMaisakaReplyGenerator:
                     continue
 
                 context_items = build_context_items_from_history_entry(
-                    message,
+                    self._build_replyer_history_message(message),
                     enable_visual_message=enable_visual_message,
                 )
                 items.extend(context_items)
@@ -870,8 +952,7 @@ class BaseMaisakaReplyGenerator:
             for item in generation_result.output_items
         )
         response_completed = (
-            generation_result.generation_trace is not None
-            and generation_result.generation_trace.status == "completed"
+            generation_result.generation_trace is not None and generation_result.generation_trace.status == "completed"
         )
         return has_reasoning and not has_visible_message and response_completed
 
@@ -972,8 +1053,9 @@ class BaseMaisakaReplyGenerator:
 
         if isinstance(message, (ReferenceMessage, ToolResultMessage)):
             return True
-        if isinstance(message, SessionBackedMessage) and message.source_kind == TOOL_RESULT_MEDIA_SOURCE_KIND:
-            return True
+        if isinstance(message, SessionBackedMessage):
+            if message.source_kind in {*FOCUS_WAKEUP_SOURCE_KINDS, "focus_switch", TOOL_RESULT_MEDIA_SOURCE_KIND}:
+                return True
         return is_mid_term_memory_message(message)
 
     @classmethod

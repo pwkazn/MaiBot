@@ -65,6 +65,7 @@ def _message(
         SessionMessage,
         SimpleNamespace(
             message_id=message_id,
+            platform="test-platform",
             session_id="test-session",
             timestamp=datetime(2026, 9, 22, 14, minute, 0),
             message_info=SimpleNamespace(
@@ -180,7 +181,9 @@ async def test_fetch_history_keeps_text_metadata_and_order_without_visual_payloa
     assert 'chat_id="test-session"' in older_text
     assert 'quote="quoted-message"' in older_text
     assert 'time="14:01:00"' in older_text
-    assert 'user="测试昵称"' in older_text
+    assert 'nickname="测试昵称"' in older_text
+    assert 'user_id="test-user"' in older_text
+    assert 'person_id="' in older_text
     assert 'group_card="测试群名片"' in older_text
     assert "以前的消息" in older_text
     assert "[图片：小猫]" in older_text

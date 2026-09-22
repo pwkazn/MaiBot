@@ -32,7 +32,7 @@ def test_full_complex_message_returns_path_instead_of_expanding_nested_forward()
 
     content = build_full_complex_message_content_from_sequence(MessageSequence([outer_forward]))
 
-    assert "【外层用户】: [嵌套转发消息，path=[0, 0]" in content
+    assert 'nickname="外层用户" identity_unknown="true"/>】: [嵌套转发消息，path=[0, 0]' in content
     assert "内层正文" not in content
 
 
@@ -43,7 +43,7 @@ def test_full_complex_message_expands_selected_nested_forward_one_level() -> Non
 
     content = build_full_complex_message_content_from_sequence(MessageSequence([outer_forward]), [0, 0])
 
-    assert "【内层用户】: 内层正文 [嵌套转发消息，path=[0, 0, 0]" in content
+    assert 'nickname="内层用户" identity_unknown="true"/>】: 内层正文 [嵌套转发消息，path=[0, 0, 0]' in content
     assert "最内层正文" not in content
 
 
@@ -59,7 +59,7 @@ def test_full_complex_message_preserves_mixed_components_around_nested_forward()
 
     content = build_full_complex_message_content_from_sequence(MessageSequence([outer_forward]))
 
-    assert "【外层用户】: 转发前 [嵌套转发消息，path=[0, 0]" in content
+    assert 'nickname="外层用户" identity_unknown="true"/>】: 转发前 [嵌套转发消息，path=[0, 0]' in content
     assert "转发后" in content
     assert "内层正文" not in content
 
@@ -69,7 +69,7 @@ def test_full_complex_message_keeps_adjacent_plain_components_inline() -> None:
 
     content = build_full_complex_message_content_from_sequence(MessageSequence([forward]))
 
-    assert "【用户】: 第一段 第二段" in content
+    assert 'nickname="用户" identity_unknown="true"/>】: 第一段 第二段' in content
 
 
 def test_full_complex_message_rejects_invalid_path() -> None:
@@ -89,5 +89,5 @@ def test_complex_message_prompt_keeps_nested_forward_as_placeholder() -> None:
 
     prompt_text = _build_complex_message_prompt_text(MessageSequence([outer_forward]))
 
-    assert "外层用户：[转发消息]" in prompt_text
+    assert 'nickname="外层用户" identity_unknown="true"/>：[转发消息]' in prompt_text
     assert "内层正文" not in prompt_text

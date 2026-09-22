@@ -17,6 +17,7 @@ from src.common.data_models.message_component_data_model import MessageSequence,
 from src.common.logger import get_logger
 from src.config.config import global_config
 
+from src.maisaka.context.identity import format_participant_reference
 from src.maisaka.context.messages import (
     FOCUS_AT_WAKEUP_SOURCE,
     FOCUS_COOLDOWN_WAKEUP_SOURCE,
@@ -536,7 +537,12 @@ class MaisakaFocusRuntimeMixin:
     @staticmethod
     def _format_focus_latest_message(message: SessionMessage, max_length: int = 160) -> str:
         user_info = message.message_info.user_info
-        speaker_name = user_info.user_cardname or user_info.user_nickname or user_info.user_id
+        speaker_name = format_participant_reference(
+            platform=message.platform,
+            user_id=user_info.user_id,
+            nickname=user_info.user_nickname,
+            group_card=user_info.user_cardname or "",
+        )
         text = str(message.processed_plain_text or "").strip()
         if not text:
             text = "[空消息]"

@@ -5,6 +5,7 @@ Requirements:
 3. recall_cues should contain 3-5 query-like passages for future semantic matching. Think about "in what situations might these details be needed" and "what topics, people, tasks, or keywords are these details connected to"; write each item as a natural short sentence with matchable scenarios, intents, or associations.
 4. Output exactly one JSON object, without Markdown code fences or extra explanation. The object must follow {{"summary":"...","recall_cues":["..."]}}.
 5. The chat history will be provided as multiple original-style messages. Use the message boundaries as context.
+6. This is internal memory. Identify people primarily by person_id (with platform and user_id); preserve the mapping between IDs and nicknames/group cards whenever summary or recall_cues mention a person. Different IDs with the same name are different people; a renamed person with the same ID is still the same person. Identify the bot only from explicit self markers, not from a nickname or the assistant role, and do not invent IDs for people without identity metadata. Later user-facing replies should primarily use nicknames.
 
 Time range: {time_range}
 Participants: {participants_text}

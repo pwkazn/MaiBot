@@ -1,4 +1,4 @@
-﻿"""Maisaka 内置工具执行上下文。"""
+"""Maisaka 内置工具执行上下文。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
-from src.chat.utils.utils import ProcessedResponseSegment, process_llm_response, process_llm_response_segments
+from src.chat.utils.utils import (
+    ProcessedResponseSegment,
+    get_bot_account,
+    process_llm_response,
+    process_llm_response_segments,
+)
 from src.common.data_models.message_component_data_model import (
     AtComponent,
     EmojiComponent,
@@ -18,6 +23,7 @@ from src.common.data_models.message_component_data_model import (
 from src.common.logger import get_logger
 from src.config.config import global_config
 from src.core.tooling import ToolExecutionResult
+from src.maisaka.context.identity import build_participant_identity
 from src.maisaka.context.message_adapter import format_speaker_content
 from src.maisaka.context.messages import SessionBackedMessage
 from src.maisaka.context.planner_messages import (
@@ -448,10 +454,13 @@ class BuiltinToolRuntimeContext:
         """将引导回复写回 Maisaka 历史。"""
 
         bot_name = global_config.bot.nickname.strip() or "MaiSaka"
+        bot_user_id = get_bot_account(self.runtime.chat_stream.platform, self.runtime.chat_stream.account_id)
         reply_timestamp = datetime.now()
         include_chat_id = self._should_include_planner_chat_id()
         history_message = build_session_backed_text_message(
             speaker_name=bot_name,
+            platform=self.runtime.chat_stream.platform,
+            user_id=bot_user_id,
             text=reply_text,
             timestamp=reply_timestamp,
             source_kind="guided_reply",
@@ -470,12 +479,15 @@ class BuiltinToolRuntimeContext:
 
         from src.maisaka.context.messages import SessionBackedMessage
         from src.maisaka.context.history import build_prefixed_message_sequence, build_session_message_visible_text
+
         user_info = message.message_info.user_info
         speaker_name = user_info.user_cardname or user_info.user_nickname or user_info.user_id
         include_chat_id = self._should_include_planner_chat_id()
         planner_prefix = build_planner_prefix(
             timestamp=message.timestamp,
             user_name=speaker_name,
+            platform=message.platform,
+            user_id=user_info.user_id,
             group_card=user_info.user_cardname or "",
             message_id=message.message_id,
             chat_id=message.session_id,
@@ -505,11 +517,14 @@ class BuiltinToolRuntimeContext:
         """将 bot 主动发送的表情包同步到 Maisaka 历史。"""
 
         bot_name = global_config.bot.nickname.strip() or "MaiSaka"
+        bot_user_id = get_bot_account(self.runtime.chat_stream.platform, self.runtime.chat_stream.account_id)
         reply_timestamp = datetime.now()
         include_chat_id = self._should_include_planner_chat_id()
         planner_prefix = build_planner_prefix(
             timestamp=reply_timestamp,
             user_name=bot_name,
+            platform=self.runtime.chat_stream.platform,
+            user_id=bot_user_id,
             chat_id=self.runtime.session_id,
             include_chat_id=include_chat_id,
             is_self_message=True,
@@ -532,5 +547,8 @@ class BuiltinToolRuntimeContext:
             ),
             timestamp=reply_timestamp,
             source_kind="guided_reply",
+            participant_identity=build_participant_identity(
+                platform=self.runtime.chat_stream.platform, user_id=bot_user_id, nickname=bot_name
+            ),
         )
         self.runtime._chat_history.append(history_message)

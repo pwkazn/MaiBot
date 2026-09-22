@@ -18,6 +18,11 @@ display_name = "Planner (Timing merged)"
 advanced = false
 description = "Main Maisaka planning template used when independent timing awareness is disabled, with timing decisions merged into the planner."
 
+[maisaka_identity]
+display_name = "Participant Identity Rules"
+advanced = true
+description = "Defines shared participant identity rules for the Maisaka planner and sub-agents, using stable IDs to distinguish namesakes, renamed users, and bot accounts while keeping natural names in replies."
+
 [maisaka_replyer]
 display_name = "Replyer"
 advanced = false

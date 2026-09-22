@@ -1,7 +1,6 @@
 from datetime import datetime
+from sqlmodel import col, or_, select
 from typing import List, Optional, Union
-
-from sqlmodel import col, select
 
 import hashlib
 import json
@@ -55,15 +54,51 @@ def get_person_id(platform: str, user_id: Union[int, str]) -> str:
 
 
 def get_person_id_by_person_name(person_name: str) -> str:
-    """根据用户名获取用户ID"""
-    try:
-        with get_db_session(auto_commit=False) as session:
-            statement = select(PersonInfo.person_id).where(col(PersonInfo.person_name) == person_name).limit(1)
-            person_id = session.exec(statement).first()
-            return str(person_id) if person_id else ""
-    except Exception as e:
-        logger.error(f"根据用户名 {person_name} 获取用户ID时出错: {e}")
+    """按名称、昵称或完整群名片查找唯一人物；重名时要求使用人物 ID。"""
+    clean_name = person_name.strip()
+    if not clean_name:
         return ""
+    with get_db_session(auto_commit=False) as session:
+        records = session.exec(
+            select(PersonInfo).where(
+                or_(
+                    col(PersonInfo.person_name) == clean_name,
+                    col(PersonInfo.user_nickname) == clean_name,
+                    col(PersonInfo.group_cardname) != "",
+                )
+            )
+        ).all()
+
+        # 群名片含 JSON 转义，不能用原始名称做子串预筛选，否则可能漏掉重名人物。
+        # 读取非空群名片后按完整名称匹配，避免把不完整的候选集合误判为唯一人物。
+        matches: List[PersonInfo] = []
+        for record in records:
+            if clean_name in (record.person_name, record.user_nickname) or any(
+                item.group_cardname == clean_name for item in parse_group_cardname_json(record.group_cardname) or []
+            ):
+                matches.append(record)
+        if len(matches) > 1:
+            candidates = [
+                {
+                    "person_id": record.person_id,
+                    "person_name": record.person_name or record.user_nickname,
+                    "platform": record.platform,
+                    "user_id": record.user_id,
+                }
+                for record in matches
+            ]
+            raise ValueError(
+                f"人物名称“{clean_name}”对应多个人物，请使用 person_id。候选："
+                f"{json.dumps(candidates, ensure_ascii=False)}"
+            )
+        return matches[0].person_id if matches else ""
+
+
+def get_person_name_by_person_id(person_id: str) -> str:
+    """按已确定的人物 ID 获取展示名称，不通过名称反向选择人物。"""
+    with get_db_session(auto_commit=False) as session:
+        record = session.exec(select(PersonInfo).where(col(PersonInfo.person_id) == person_id)).first()
+        return (record.person_name or record.user_nickname).strip() if record is not None else ""
 
 
 def resolve_person_id_for_memory(
@@ -76,20 +111,22 @@ def resolve_person_id_for_memory(
     """解析长期记忆检索/写入使用的人物 ID。
 
     解析顺序：
-    1. 优先按 `person_name` 映射数据库中的 `person_id`
-    2. 回退到 `platform + user_id` 生成稳定 `person_id`
+    1. 已明确 `platform + user_id` 时，按账号生成稳定 `person_id`，名称不能覆盖账号
+    2. 未明确账号时，只接受唯一名称匹配
     3. 若 `strict_known=True`，则要求该 `person_id` 已被认识
     """
-    clean_name = str(person_name or "").strip()
-    if clean_name:
-        if by_name := get_person_id_by_person_name(clean_name):
-            return by_name
-
     clean_platform = str(platform or "").strip()
     clean_user_id = str(user_id or "").strip()
     if clean_platform and clean_user_id:
         candidate = get_person_id(clean_platform, clean_user_id)
         if strict_known and not is_person_known(person_id=candidate):
+            return ""
+        return candidate
+
+    clean_name = str(person_name or "").strip()
+    if clean_name:
+        candidate = get_person_id_by_person_name(clean_name)
+        if candidate and strict_known and not is_person_known(person_id=candidate):
             return ""
         return candidate
 
@@ -545,11 +582,13 @@ async def store_person_memory_from_answer(
         session_user_id = str(getattr(session, "user_id", "") or "").strip()
         session_group_id = str(getattr(session, "group_id", "") or "").strip()
 
-        person_id = clean_person_id or resolve_person_id_for_memory(
-            person_name=clean_person_name,
-            platform=session_platform,
-            user_id=session_user_id,
-        )
+        if clean_person_id:
+            person_id = clean_person_id
+        elif clean_person_name:
+            # 记忆主体可能是私聊中提到的其他人，聊天对象账号不等于该人物的明确账号。
+            person_id = resolve_person_id_for_memory(person_name=clean_person_name)
+        else:
+            person_id = resolve_person_id_for_memory(platform=session_platform, user_id=session_user_id)
         if not person_id:
             logger.warning(f"无法确定person_id for person_name: {clean_person_name}, chat_id: {clean_chat_id}")
             return

@@ -18,6 +18,11 @@ display_name = "Planner（タイミング統合）"
 advanced = false
 description = "独立したタイミング判断を使わない場合の Maisaka メイン計画テンプレート。発話タイミングの判断を Planner に統合する。"
 
+[maisaka_identity]
+display_name = "参加者の識別ルール"
+advanced = true
+description = "Maisaka の Planner とサブエージェントで共有する参加者の識別ルール。安定した ID で同名の参加者、名前の変更、ボット自身のアカウントを区別し、返信では自然な呼び名を使う。"
+
 [maisaka_replyer]
 display_name = "Replyer"
 advanced = false

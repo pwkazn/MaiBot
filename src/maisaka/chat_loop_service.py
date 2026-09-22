@@ -10,6 +10,7 @@ import time
 
 from rich.console import RenderableType
 
+from src.chat.message_receive.chat_manager import chat_manager
 from src.common.data_models.llm_service_data_models import LLMGenerationOptions
 from src.common.i18n import get_locale
 from src.common.logger import get_logger
@@ -45,6 +46,7 @@ from src.services.llm_service import LLMServiceClient
 
 from src.maisaka.builtin_tool import get_builtin_tools
 from src.maisaka.context.history import normalize_tool_call_result_pairs
+from src.maisaka.context.identity import format_bot_identity_context
 from src.maisaka.context.messages import (
     LLMContextMessage,
     ModelOutputContextMessage,
@@ -915,6 +917,14 @@ class MaisakaChatLoopService:
         else:
             resolved_system_prompt = self._build_chat_system_prompt()
         system_item.add_text_content(resolved_system_prompt)
+        # 子 agent 可自带任务提示，但必须共享同一套参与者身份协议。
+        system_item.add_text_content(load_prompt("maisaka_identity"))
+        if current_session := chat_manager.get_session_by_session_id(self._session_id):
+            bot_identity = format_bot_identity_context(
+                platform=current_session.platform, nickname=global_config.bot.nickname
+            )
+            if bot_identity:
+                system_item.add_text_content(bot_identity)
         items.append(system_item.build())
 
         previous_context_timestamp: datetime | None = None
@@ -972,10 +982,7 @@ class MaisakaChatLoopService:
         normalized_final_user_message = str(final_user_message or "").strip()
         if normalized_final_user_message:
             items.append(
-                ContextItemBuilder()
-                .set_role(RoleType.User)
-                .add_text_content(normalized_final_user_message)
-                .build()
+                ContextItemBuilder().set_role(RoleType.User).add_text_content(normalized_final_user_message).build()
             )
 
         return items
@@ -1016,9 +1023,7 @@ class MaisakaChatLoopService:
             include_day_boundary_time_messages=request_kind == "planner",
             injected_user_messages=injected_user_messages,
             tail_user_messages=tail_user_messages,
-            final_user_message=(
-                self._build_planner_final_user_reminder() if request_kind == "planner" else None
-            ),
+            final_user_message=(self._build_planner_final_user_reminder() if request_kind == "planner" else None),
             system_prompt=system_prompt,
         )
         if enable_visual_message:
