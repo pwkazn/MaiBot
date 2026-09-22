@@ -2048,9 +2048,7 @@ async def test_episode_source_batch_preserves_processing_error_when_failure_mark
     result = await kernel._ingest_service.process_episode_source_rebuild_batch()
 
     assert result["failed"] == 1
-    assert result["failures"] == [
-        {"source": "chat_summary:source-1", "error": "primary episode failure"}
-    ]
+    assert result["failures"] == [{"source": "chat_summary:source-1", "error": "primary episode failure"}]
 
 
 @pytest.mark.asyncio
@@ -2126,9 +2124,7 @@ async def test_episode_source_worker_reports_unpublished_cas_result_as_unfinishe
     assert result["rebuilt"] == 0
     assert result["superseded"] == 1
     assert result["unfinished"] == 1
-    assert result["unfinished_items"] == [
-        {"source": "chat_summary:source-1", "reason": "superseded"}
-    ]
+    assert result["unfinished_items"] == [{"source": "chat_summary:source-1", "reason": "superseded"}]
 
 
 @pytest.mark.asyncio
@@ -2167,9 +2163,7 @@ async def test_episode_source_worker_reports_scoped_source_that_cannot_be_claime
 
     assert result["rebuilt"] == 0
     assert result["unfinished"] == 1
-    assert result["unfinished_items"] == [
-        {"source": "chat_summary:source-1", "reason": "not_claimed"}
-    ]
+    assert result["unfinished_items"] == [{"source": "chat_summary:source-1", "reason": "not_claimed"}]
 
 
 @pytest.mark.asyncio

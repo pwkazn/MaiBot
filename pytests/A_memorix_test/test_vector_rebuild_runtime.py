@@ -727,6 +727,7 @@ async def test_default_dual_mode_does_not_start_historical_reembedding(
         plugin_root=tmp_path / "plugin_root",
         config=_default_dual_kernel_config(data_dir, fake_embedding_manager.default_dimension),
     )
+
     async def _unexpected_rebuild(**kwargs: Any) -> dict[str, Any]:
         nonlocal rebuild_calls
         del kwargs
@@ -1599,9 +1600,7 @@ async def test_restart_waits_for_observed_fallback_model_before_loading_vectors(
         restarted_kernel.retrieval_tuning_manager._ensure_ready()
         assert restarted_kernel.summary_importer.vector_store is restarted_kernel.vector_store
         paragraph_store = (
-            restarted_kernel.paragraph_vector_store
-            if stored_pool_mode == "dual"
-            else restarted_kernel.vector_store
+            restarted_kernel.paragraph_vector_store if stored_pool_mode == "dual" else restarted_kernel.vector_store
         )
         assert paragraph_hash in paragraph_store
         assert restarted_kernel._dual_vector_pools_enabled() is (stored_pool_mode == "dual")
@@ -1796,9 +1795,7 @@ async def test_valid_dual_pools_ignore_damaged_legacy_single_pool(
     with (data_dir / "vectors" / "vectors.bin").open("ab") as vector_file:
         vector_file.write(np.eye(1, fake_embedding_manager.default_dimension, dtype=np.float16).tobytes())
     with (data_dir / "vectors" / "vectors_ids.bin").open("ab") as id_file:
-        id_file.write(
-            np.asarray([kernel_module.VectorStore._generate_id("orphan")], dtype=">i8").tobytes()
-        )
+        id_file.write(np.asarray([kernel_module.VectorStore._generate_id("orphan")], dtype=">i8").tobytes())
 
     reloaded = SDKMemoryKernel(
         plugin_root=tmp_path / "plugin_root_reloaded",

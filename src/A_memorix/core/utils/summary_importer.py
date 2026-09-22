@@ -272,18 +272,13 @@ class SummaryImporter:
             batch_entities = pending_entities[offset : offset + write_batch_size]
             try:
                 embeddings = np.asarray(
-                    await self.embedding_manager.encode_batch(
-                        [name for _, name, _ in batch_entities]
-                    ),
+                    await self.embedding_manager.encode_batch([name for _, name, _ in batch_entities]),
                     dtype=np.float32,
                 )
                 if embeddings.ndim == 1:
                     embeddings = embeddings.reshape(1, -1)
                 if embeddings.shape[0] != len(batch_entities):
-                    raise ValueError(
-                        "实体批量向量数量不匹配: "
-                        f"{embeddings.shape[0]} vs {len(batch_entities)}"
-                    )
+                    raise ValueError(f"实体批量向量数量不匹配: {embeddings.shape[0]} vs {len(batch_entities)}")
                 target_store.add(
                     vectors=embeddings,
                     ids=[vector_id for _, _, vector_id in batch_entities],
@@ -292,8 +287,7 @@ class SummaryImporter:
                 if not self._allow_metadata_only_write():
                     raise
                 logger.warning(
-                    "总结导入实体批量向量写入失败，保留 metadata/graph: "
-                    f"count={len(batch_entities)} error={exc}"
+                    f"总结导入实体批量向量写入失败，保留 metadata/graph: count={len(batch_entities)} error={exc}"
                 )
 
     def _normalize_summary_model_selectors(self, raw_value: Any) -> List[str]:
@@ -489,9 +483,7 @@ class SummaryImporter:
         paragraph_hash = str(existing.get("paragraph_hash", "") or "").strip()
         paragraph = self.metadata_store.get_paragraph(paragraph_hash) if paragraph_hash else None
         if not isinstance(paragraph, dict) or bool(paragraph.get("is_deleted", 0)):
-            raise RuntimeError(
-                f"摘要 external ID 指向无效段落: external_id={external_id} paragraph={paragraph_hash}"
-            )
+            raise RuntimeError(f"摘要 external ID 指向无效段落: external_id={external_id} paragraph={paragraph_hash}")
         expected_source = f"chat_summary:{stream_id}"
         actual_source = str(paragraph.get("source", "") or "").strip()
         if actual_source != expected_source:
@@ -865,10 +857,7 @@ class SummaryImporter:
             rv_cfg = {}
         write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
         normalized_relations = _normalize_relation_items(relations)
-        relation_tuples = [
-            (rel["subject"], rel["predicate"], rel["object"])
-            for rel in normalized_relations
-        ]
+        relation_tuples = [(rel["subject"], rel["predicate"], rel["object"]) for rel in normalized_relations]
         if relation_tuples:
             if self.relation_write_service is not None:
                 await self.relation_write_service.upsert_relations_with_vectors(

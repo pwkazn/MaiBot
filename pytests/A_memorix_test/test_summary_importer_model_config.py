@@ -433,10 +433,12 @@ async def test_summary_import_uses_host_persistence_with_stale_vector_store(
     monkeypatch.setattr(
         llm_api,
         "generate",
-        AsyncMock(return_value=SimpleNamespace(
-            success=True,
-            completion=SimpleNamespace(response='{"summary": "测试摘要", "entities": [], "relations": []}'),
-        )),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                completion=SimpleNamespace(response='{"summary": "测试摘要", "entities": [], "relations": []}'),
+            )
+        ),
     )
     monkeypatch.setattr(summary_importer_module.logger, "error", error_logs.append)
 

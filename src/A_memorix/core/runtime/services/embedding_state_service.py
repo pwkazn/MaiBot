@@ -407,9 +407,7 @@ class MemoryEmbeddingStateService(KernelServiceBase):
                 log_prefix="[sdk]",
             )
             if not runtime_bundle.ready:
-                self._disable_vector_channel(
-                    RuntimeError(runtime_bundle.error or "Embedding 恢复后检索运行时重建失败")
-                )
+                self._disable_vector_channel(RuntimeError(runtime_bundle.error or "Embedding 恢复后检索运行时重建失败"))
                 return False
 
             self._runtime_bundle = runtime_bundle
