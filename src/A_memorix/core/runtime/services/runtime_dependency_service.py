@@ -58,6 +58,7 @@ class MemoryRuntimeDependencyService(KernelServiceBase):
             metadata_store=self.metadata_store,
             embedding_manager=self.embedding_manager,
             plugin_config=runtime_config,
+            persist_callback=self._persist,
         )
         if not preserve_managers:
             self.import_task_manager = kernel_module.ImportTaskManager(self._runtime_facade)

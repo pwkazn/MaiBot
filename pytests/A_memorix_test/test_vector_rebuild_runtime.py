@@ -727,6 +727,7 @@ async def test_default_dual_mode_does_not_start_historical_reembedding(
         plugin_root=tmp_path / "plugin_root",
         config=_default_dual_kernel_config(data_dir, fake_embedding_manager.default_dimension),
     )
+
     async def _unexpected_rebuild(**kwargs: Any) -> dict[str, Any]:
         nonlocal rebuild_calls
         del kwargs
@@ -1514,10 +1515,16 @@ async def test_runtime_isolates_fingerprint_mismatch_without_historical_reembedd
         ("fake-embedding-b", "fake-embedding-a"),
     ],
 )
+@pytest.mark.parametrize(
+    ("stored_pool_mode", "configured_pool_mode"),
+    [("single", "single"), ("single", "dual"), ("dual", "dual")],
+)
 async def test_restart_waits_for_observed_fallback_model_before_loading_vectors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     restart_candidates: tuple[str, str],
+    stored_pool_mode: str,
+    configured_pool_mode: str,
 ) -> None:
     data_dir = tmp_path / "a_memorix_data"
     first_embedding_manager = _FallbackEmbeddingManager(
@@ -1530,9 +1537,11 @@ async def test_restart_waits_for_observed_fallback_model_before_loading_vectors(
         "create_embedding_api_adapter",
         lambda **kwargs: first_embedding_manager,
     )
+    first_config = _kernel_config(data_dir, first_embedding_manager.default_dimension)
+    first_config["retrieval"]["vector_pools"]["mode"] = stored_pool_mode
     first_kernel = SDKMemoryKernel(
         plugin_root=tmp_path / "plugin_root_first",
-        config=_kernel_config(data_dir, first_embedding_manager.default_dimension),
+        config=first_config,
     )
     await first_kernel.initialize()
     try:
@@ -1546,9 +1555,18 @@ async def test_restart_waits_for_observed_fallback_model_before_loading_vectors(
             batch_size=2,
         )
         assert rebuilt["success"] is True
-        assert paragraph_hash in first_kernel.vector_store
+        paragraph_store = (
+            first_kernel.paragraph_vector_store if stored_pool_mode == "dual" else first_kernel.vector_store
+        )
+        assert paragraph_hash in paragraph_store
     finally:
         await first_kernel.shutdown()
+
+    vector_dir = data_dir / "vectors"
+    if stored_pool_mode == "dual":
+        vector_dir /= "paragraph"
+    vector_bytes = (vector_dir / "vectors.bin").read_bytes()
+    id_bytes = (vector_dir / "vectors_ids.bin").read_bytes()
 
     restarted_embedding_manager = _FallbackEmbeddingManager(
         candidates=restart_candidates,
@@ -1559,9 +1577,11 @@ async def test_restart_waits_for_observed_fallback_model_before_loading_vectors(
         "create_embedding_api_adapter",
         lambda **kwargs: restarted_embedding_manager,
     )
+    restarted_config = _kernel_config(data_dir, restarted_embedding_manager.default_dimension)
+    restarted_config["retrieval"]["vector_pools"]["mode"] = configured_pool_mode
     restarted_kernel = SDKMemoryKernel(
         plugin_root=tmp_path / "plugin_root_second",
-        config=_kernel_config(data_dir, restarted_embedding_manager.default_dimension),
+        config=restarted_config,
     )
     await restarted_kernel.initialize()
     try:
@@ -1576,7 +1596,18 @@ async def test_restart_waits_for_observed_fallback_model_before_loading_vectors(
         assert restarted_embedding_manager.observed_model == "fake-embedding-b"
         assert restarted_kernel._vector_health["state"] == "healthy"
         assert restarted_kernel.vector_store is not None
-        assert paragraph_hash in restarted_kernel.vector_store
+        restarted_kernel.import_task_manager._ensure_ready()
+        restarted_kernel.retrieval_tuning_manager._ensure_ready()
+        assert restarted_kernel.summary_importer.vector_store is restarted_kernel.vector_store
+        paragraph_store = (
+            restarted_kernel.paragraph_vector_store if stored_pool_mode == "dual" else restarted_kernel.vector_store
+        )
+        assert paragraph_hash in paragraph_store
+        assert restarted_kernel._dual_vector_pools_enabled() is (stored_pool_mode == "dual")
+        assert restarted_kernel.retriever.config.vector_pools.mode == stored_pool_mode
+        assert restarted_embedding_manager.encode_calls == ["A_Memorix runtime self check"]
+        assert (vector_dir / "vectors.bin").read_bytes() == vector_bytes
+        assert (vector_dir / "vectors_ids.bin").read_bytes() == id_bytes
         assert not (data_dir / "vector_quarantine").exists()
     finally:
         await restarted_kernel.shutdown()
@@ -1764,9 +1795,7 @@ async def test_valid_dual_pools_ignore_damaged_legacy_single_pool(
     with (data_dir / "vectors" / "vectors.bin").open("ab") as vector_file:
         vector_file.write(np.eye(1, fake_embedding_manager.default_dimension, dtype=np.float16).tobytes())
     with (data_dir / "vectors" / "vectors_ids.bin").open("ab") as id_file:
-        id_file.write(
-            np.asarray([kernel_module.VectorStore._generate_id("orphan")], dtype=">i8").tobytes()
-        )
+        id_file.write(np.asarray([kernel_module.VectorStore._generate_id("orphan")], dtype=">i8").tobytes())
 
     reloaded = SDKMemoryKernel(
         plugin_root=tmp_path / "plugin_root_reloaded",

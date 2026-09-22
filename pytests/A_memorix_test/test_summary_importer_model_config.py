@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+from typing import List
+from unittest.mock import AsyncMock
+
 import asyncio
 
 import pytest
@@ -8,6 +12,7 @@ from src.A_memorix.core.utils.summary_importer import (
     _normalize_entity_items,
     _normalize_relation_items,
 )
+from src.A_memorix.core.utils import summary_importer as summary_importer_module
 from src.config.model_configs import TaskConfig
 from src.services import llm_service as llm_api
 
@@ -385,3 +390,68 @@ async def test_generated_summary_uses_common_ingest_when_external_id_is_availabl
     assert len(plugin.calls) == 1
     assert plugin.calls[0]["source_type"] == "chat_summary"
     assert plugin.calls[0]["respect_filter"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistence_error", ["", "摘要持久化写入失败"])
+async def test_summary_import_uses_host_persistence_with_stale_vector_store(
+    monkeypatch: pytest.MonkeyPatch,
+    persistence_error: str,
+) -> None:
+    persist_calls: List[str] = []
+    error_logs: List[str] = []
+
+    def persist_runtime() -> None:
+        persist_calls.append("current_runtime")
+        if persistence_error:
+            raise OSError(persistence_error)
+
+    # 冷启动时捕获的存储为 None，恢复后的落盘应交给当前宿主运行时。
+    importer = SummaryImporter(
+        vector_store=None,
+        graph_store=None,
+        metadata_store=None,
+        embedding_manager=None,
+        plugin_config={},
+        persist_callback=persist_runtime,
+    )
+    monkeypatch.setattr(importer, "_ensure_runtime_self_check", AsyncMock(return_value=(True, "ok")))
+    monkeypatch.setattr(importer, "_build_previous_summary_context", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        importer,
+        "_resolve_summary_model_task",
+        lambda: ("memory", TaskConfig(model_list=["memory-model"])),
+    )
+    execute_import = AsyncMock(return_value="paragraph-1")
+    monkeypatch.setattr(importer, "_execute_import", execute_import)
+    monkeypatch.setattr(
+        summary_importer_module.message_api,
+        "get_messages_by_time_in_chat",
+        lambda **kwargs: [SimpleNamespace(time=123.0)],
+    )
+    monkeypatch.setattr(summary_importer_module.message_api, "build_readable_messages", lambda messages: "测试聊天")
+    monkeypatch.setattr(
+        llm_api,
+        "generate",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                completion=SimpleNamespace(response='{"summary": "测试摘要", "entities": [], "relations": []}'),
+            )
+        ),
+    )
+    monkeypatch.setattr(summary_importer_module.logger, "error", error_logs.append)
+
+    result = await importer.import_from_stream("stream-1", include_personality=False)
+
+    execute_import.assert_awaited_once()
+    assert persist_calls == ["current_runtime"]
+    assert result.success is (not persistence_error)
+    if persistence_error:
+        assert result.detail == f"错误: {persistence_error}"
+        assert len(error_logs) == 1
+        assert "Traceback" in error_logs[0]
+        assert f"OSError: {persistence_error}" in error_logs[0]
+    else:
+        assert result.paragraph_hash == "paragraph-1"
+        assert error_logs == []
