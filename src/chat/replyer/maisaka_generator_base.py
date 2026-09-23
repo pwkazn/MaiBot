@@ -294,7 +294,7 @@ class BaseMaisakaReplyGenerator:
                 continue
 
             if isinstance(component, EmojiComponent):
-                rendered_parts.append(component.content.strip() or "[表情包]")
+                rendered_parts.append(component.to_plain_text())
                 continue
 
             if isinstance(component, VoiceComponent):
@@ -507,7 +507,7 @@ class BaseMaisakaReplyGenerator:
     @staticmethod
     def _build_text_from_message_sequence(message: SessionBackedMessage) -> str:
         text_parts: List[str] = []
-        for component in getattr(message.raw_message, "components", ()):
+        for component in message.raw_message.components:
             if isinstance(component, TextComponent):
                 text_parts.append(component.text)
                 continue
@@ -519,8 +519,8 @@ class BaseMaisakaReplyGenerator:
             if isinstance(component, ImageComponent) and component.content:
                 text_parts.append(component.content)
                 continue
-            if isinstance(component, EmojiComponent) and component.content:
-                text_parts.append(component.content)
+            if isinstance(component, EmojiComponent):
+                text_parts.append(component.to_plain_text())
                 continue
             if isinstance(component, VoiceComponent) and component.content:
                 text_parts.append(component.content)

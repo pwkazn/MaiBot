@@ -74,12 +74,7 @@ def _append_emoji_component(
         builder.add_image_content(image_format, base64.b64encode(component.binary_data).decode("utf-8"))
         return True
 
-    normalized_content = component.content.strip()
-    if normalized_content:
-        builder.add_text_content(normalized_content)
-        return True
-
-    builder.add_text_content("[表情包]")
+    builder.add_text_content(component.to_plain_text())
     return True
 
 
@@ -321,7 +316,7 @@ def _render_component_for_prompt(component: StandardMessageComponents, *, platfo
         return component.content.strip() if component.content else "[图片，识别中.....]"
 
     if isinstance(component, EmojiComponent):
-        return component.content.strip() if component.content else "[表情包]"
+        return component.to_plain_text()
 
     if isinstance(component, VoiceComponent):
         return component.content.strip() if component.content else "[语音消息]"

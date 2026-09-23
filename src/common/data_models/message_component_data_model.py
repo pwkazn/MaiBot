@@ -95,6 +95,16 @@ class EmojiComponent(BaseMessageComponentModel, ByteComponent):
     def format_name(self) -> str:
         return "emoji"
 
+    def to_plain_text(self) -> str:
+        """为表情描述添加类型标记，避免情绪标签被当作聊天正文。"""
+        content = self.content.strip()
+        if not content:
+            return "[表情包]"
+        # 接收消息的识图结果可能已带有标记，保留它以避免重复包裹。
+        if content.startswith("[表情包") and content.endswith("]"):
+            return content
+        return f"[表情包: {content}]"
+
     async def load_emoji_binary(self) -> None:
         """
         加载表情的二进制数据，如果 binary_data 为空，则通过 emoji_hash 从表情管理器加载
@@ -204,7 +214,11 @@ class FileComponent(BaseMessageComponentModel):
         """从平台或历史负载构造文件组件。"""
 
         return cls(
-            name=payload.get("name") or payload.get("file") or payload.get("file_name") or payload.get("filename") or "",
+            name=payload.get("name")
+            or payload.get("file")
+            or payload.get("file_name")
+            or payload.get("filename")
+            or "",
             size=payload.get("size") or payload.get("file_size") or "",
             url=payload.get("url") or payload.get("file_url") or "",
             file_id=payload.get("file_id") or payload.get("id") or "",
@@ -455,9 +469,17 @@ class MessageSequence:
         elif isinstance(item, ImageComponent):
             return {"type": "image", "data": item.content.strip(), "hash": item.binary_hash}
         elif isinstance(item, EmojiComponent):
-            return {"type": "emoji", "data": self._ensure_binary_component_content(item, "[表情包]"), "hash": item.binary_hash}
+            return {
+                "type": "emoji",
+                "data": self._ensure_binary_component_content(item, "[表情包]"),
+                "hash": item.binary_hash,
+            }
         elif isinstance(item, VoiceComponent):
-            return {"type": "voice", "data": self._ensure_binary_component_content(item, "[语音消息]"), "hash": item.binary_hash}
+            return {
+                "type": "voice",
+                "data": self._ensure_binary_component_content(item, "[语音消息]"),
+                "hash": item.binary_hash,
+            }
         elif isinstance(item, FileComponent):
             return {"type": "file", "data": item.to_payload()}
         elif isinstance(item, AtComponent):

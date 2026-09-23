@@ -462,7 +462,7 @@ def _build_processed_plain_text(message: SessionMessage) -> str:
             continue
 
         if isinstance(component, EmojiComponent):
-            processed_parts.append(component.content.strip() or "[表情]")
+            processed_parts.append(component.to_plain_text())
             continue
 
         if isinstance(component, VoiceComponent):
@@ -918,8 +918,7 @@ async def _send_via_platform_io(
             await _store_sent_message(message)
         await _notify_memory_automation_on_message_sent(message)
         should_log_delivery = show_log and any(
-            receipt.driver_kind != DriverKind.LOCAL
-            for receipt in delivery_batch.sent_receipts
+            receipt.driver_kind != DriverKind.LOCAL for receipt in delivery_batch.sent_receipts
         )
         if should_log_delivery:
             successful_driver_ids = [receipt.driver_id or "unknown" for receipt in delivery_batch.sent_receipts]
