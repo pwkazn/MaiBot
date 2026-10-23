@@ -4,9 +4,8 @@ from typing import Any, Dict, List, Optional, TypedDict
 import base64
 import hashlib
 
-from src.common.logger import get_logger
 from src.chat.message_receive.message import SessionMessage
-from src.common.data_models.mai_message_data_model import UserInfo, GroupInfo, MessageInfo
+from src.common.data_models.mai_message_data_model import GroupInfo, MessageInfo, UserInfo
 from src.common.data_models.message_component_data_model import (
     AtComponent,
     DictComponent,
@@ -21,6 +20,7 @@ from src.common.data_models.message_component_data_model import (
     TextComponent,
     VoiceComponent,
 )
+from src.common.logger import get_logger
 
 logger = get_logger("plugin_runtime.host.message_utils")
 
@@ -142,16 +142,20 @@ class PluginMessageUtils:
             }
 
         if isinstance(component, ReplyComponent):
-            return {
-                "type": "reply",
-                "data": {
-                    "target_message_id": component.target_message_id,
-                    "target_message_content": component.target_message_content,
-                    "target_message_sender_id": component.target_message_sender_id,
-                    "target_message_sender_nickname": component.target_message_sender_nickname,
-                    "target_message_sender_cardname": component.target_message_sender_cardname,
-                },
+            reply_data: Dict[str, Any] = {
+                "target_message_id": component.target_message_id,
+                "target_message_content": component.target_message_content,
+                "target_message_sender_id": component.target_message_sender_id,
+                "target_message_sender_nickname": component.target_message_sender_nickname,
+                "target_message_sender_cardname": component.target_message_sender_cardname,
             }
+            # Hook 往返会重建 SessionMessage，必须保留已解析的引用图片等组件。
+            # 这里只扩充运行时载荷；数据库的 MessageSequence 格式仍只保存引用 ID。
+            if component.target_message is not None:
+                reply_data["target_message"] = PluginMessageUtils._message_sequence_to_dict(
+                    component.target_message, include_binary_data=include_binary_data
+                )
+            return {"type": "reply", "data": reply_data}
 
         if isinstance(component, ForwardNodeComponent):
             return {
@@ -276,6 +280,9 @@ class PluginMessageUtils:
         if item_type == "reply":
             reply_data = item.get("data")
             if isinstance(reply_data, dict):
+                target_message_data = reply_data.get("target_message")
+                if target_message_data is not None and not isinstance(target_message_data, list):
+                    raise ValueError("引用消息的 target_message 字段必须是组件列表")
                 return ReplyComponent(
                     target_message_id=str(reply_data.get("target_message_id") or ""),
                     target_message_content=PluginMessageUtils._normalize_optional_string(
@@ -289,6 +296,11 @@ class PluginMessageUtils:
                     ),
                     target_message_sender_cardname=PluginMessageUtils._normalize_optional_string(
                         reply_data.get("target_message_sender_cardname")
+                    ),
+                    target_message=(
+                        PluginMessageUtils._message_sequence_from_dict(target_message_data)
+                        if target_message_data is not None
+                        else None
                     ),
                 )
             return ReplyComponent(target_message_id=str(reply_data or ""))

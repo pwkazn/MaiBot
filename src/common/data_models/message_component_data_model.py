@@ -282,6 +282,7 @@ class ReplyComponent(BaseMessageComponentModel):
         target_message_sender_id: Optional[str] = None,
         target_message_sender_nickname: Optional[str] = None,
         target_message_sender_cardname: Optional[str] = None,
+        target_message: Optional["MessageSequence"] = None,
     ) -> None:
         assert isinstance(target_message_id, str), "ReplyComponent 的 target_message_id 必须是字符串类型"
         self.target_message_id = target_message_id
@@ -294,6 +295,8 @@ class ReplyComponent(BaseMessageComponentModel):
         """目标消息发送者昵称"""
         self.target_message_sender_cardname: Optional[str] = target_message_sender_cardname
         """目标消息发送者群昵称"""
+        self.target_message: Optional["MessageSequence"] = target_message
+        """按消息 ID 解析的结构化原消息；仅在内存中缓存，持久化仍只保存引用 ID。"""
 
     async def to_seg(self) -> Seg:
         return Seg(type="reply", data=self.target_message_id)

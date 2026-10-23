@@ -804,9 +804,9 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         """刷新待识别图片描述，并登记识别完成后的监控面板更新。"""
 
         try:
-            from src.maisaka.visual.chat_history_refresher import _refresh_pending_visual_components
+            from src.maisaka.visual.chat_history_refresher import refresh_visual_component_descriptions
 
-            _refresh_pending_visual_components(message.raw_message.components)
+            refresh_visual_component_descriptions(message.raw_message.components)
             self._register_monitor_visual_placeholder_refresh(message)
         except Exception as exc:
             logger.debug(f"{self.log_prefix} 刷新监控消息媒体描述失败: message_id={message.message_id} error={exc}")
@@ -867,9 +867,9 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         """图片识别完成后，原地刷新监控面板中的消息内容。"""
 
         try:
-            from src.maisaka.visual.chat_history_refresher import _refresh_pending_visual_components
+            from src.maisaka.visual.chat_history_refresher import refresh_visual_component_descriptions
 
-            if not _refresh_pending_visual_components(message.raw_message.components):
+            if not refresh_visual_component_descriptions(message.raw_message.components):
                 return
 
             user_info = message.message_info.user_info

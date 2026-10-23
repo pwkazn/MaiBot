@@ -1,14 +1,15 @@
 """WebUI 聊天运行时服务。"""
 
 from dataclasses import dataclass
-import base64
-import binascii
-import time
-import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple, cast
 
 from pydantic import BaseModel
 from sqlmodel import col, delete, select
+
+import base64
+import binascii
+import time
+import uuid
 
 from src.chat.message_receive.bot import chat_bot
 from src.chat.message_receive.message import SessionMessage
@@ -19,6 +20,7 @@ from src.common.logger import get_logger
 from src.common.message_repository import find_messages
 from src.common.utils.utils_session import SessionUtils
 from src.config.config import global_config
+from src.maisaka.visual.chat_history_refresher import refresh_visual_component_descriptions
 
 from .serializers import serialize_message_sequence
 
@@ -178,8 +180,9 @@ class ChatHistoryManager:
 
             user_info = target_msg.message_info.user_info
             if not has_content:
-                content_text = target_msg.processed_plain_text or ""
-                data["target_message_content"] = content_text
+                components = SessionMessage._copy_reply_components(target_msg.raw_message.components)
+                refresh_visual_component_descriptions(components)
+                data["target_message_content"] = target_msg._render_reply_content(components)
             if not has_sender:
                 data["target_message_sender_id"] = user_info.user_id or ""
                 data["target_message_sender_nickname"] = user_info.user_nickname or ""

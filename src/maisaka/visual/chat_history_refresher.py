@@ -1,11 +1,17 @@
 """Maisaka 聊天历史视觉占位刷新器。"""
 
-from typing import Awaitable, Callable, List, Optional
+from typing import Awaitable, Callable, List, Optional, Sequence
 
 from sqlmodel import select
 
 from src.chat.message_receive.message import SessionMessage
-from src.common.data_models.message_component_data_model import EmojiComponent, ForwardNodeComponent, ImageComponent
+from src.common.data_models.message_component_data_model import (
+    EmojiComponent,
+    ForwardNodeComponent,
+    ImageComponent,
+    ReplyComponent,
+    StandardMessageComponents,
+)
 from src.common.database.database import get_db_session
 from src.common.database.database_model import ImageType, Images
 from src.common.logger import get_logger
@@ -38,7 +44,7 @@ async def refresh_chat_history_visual_placeholders(
 
         original_message = history_message.original_message
         if original_message is None:
-            visual_components_updated = _refresh_pending_visual_components(history_message.raw_message.components)
+            visual_components_updated = refresh_visual_component_descriptions(history_message.raw_message.components)
             if not visual_components_updated:
                 continue
 
@@ -46,7 +52,7 @@ async def refresh_chat_history_visual_placeholders(
             refreshed_count += 1
             continue
 
-        visual_components_updated = _refresh_pending_visual_components(original_message.raw_message.components)
+        visual_components_updated = refresh_visual_component_descriptions(original_message.raw_message.components)
         if visual_components_updated:
             await original_message.process(
                 enable_heavy_media_analysis=False,
@@ -166,6 +172,10 @@ def _is_vlm_task_configured() -> bool:
 
 def _has_pending_image_component(components: list[object]) -> bool:
     for component in components:
+        if isinstance(component, ReplyComponent) and component.target_message is not None:
+            if _has_pending_image_component(component.target_message.components):
+                return True
+            continue
         if isinstance(component, ImageComponent):
             if _should_refresh_image_component(component) and _is_image_component_pending(component):
                 return True
@@ -184,6 +194,9 @@ def _has_pending_image_component(components: list[object]) -> bool:
 def _collect_pending_image_hashes(components: list[object]) -> list[str]:
     pending_image_hashes: list[str] = []
     for component in components:
+        if isinstance(component, ReplyComponent) and component.target_message is not None:
+            pending_image_hashes.extend(_collect_pending_image_hashes(component.target_message.components))
+            continue
         if isinstance(component, ImageComponent):
             if _should_refresh_image_component(component) and _is_image_component_pending(component):
                 pending_image_hashes.append(component.binary_hash)
@@ -224,11 +237,15 @@ def _is_image_description_pending(image_hash: str) -> bool:
         return False
 
 
-def _refresh_pending_visual_components(components: list[object]) -> bool:
+def refresh_visual_component_descriptions(components: Sequence[StandardMessageComponents]) -> bool:
     """用缓存中的描述更新尚未补全文本的图片与表情组件。"""
 
     refreshed = False
     for component in components:
+        if isinstance(component, ReplyComponent) and component.target_message is not None:
+            if refresh_visual_component_descriptions(component.target_message.components):
+                refreshed = True
+            continue
         if isinstance(component, ImageComponent):
             if _should_refresh_image_component(component):
                 image_description = _lookup_cached_image_description(component.binary_hash)
@@ -249,7 +266,7 @@ def _refresh_pending_visual_components(components: list[object]) -> bool:
             continue
 
         for forward_component in component.forward_components:
-            if _refresh_pending_visual_components(forward_component.content):
+            if refresh_visual_component_descriptions(forward_component.content):
                 refreshed = True
 
     return refreshed

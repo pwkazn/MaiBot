@@ -1,13 +1,12 @@
-import asyncio
 from asyncio import Task
+from copy import deepcopy
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from rich.traceback import install
-from sqlmodel import select
+
+import asyncio
 
 from src.common.logger import get_logger
-from src.common.database.database import get_db_session
-from src.common.database.database_model import Messages
 from src.common.data_models.mai_message_data_model import MaiMessage, UserInfo
 from src.common.data_models.message_component_data_model import (
     AtComponent,
@@ -16,6 +15,7 @@ from src.common.data_models.message_component_data_model import (
     FileComponent,
     ForwardNodeComponent,
     ImageComponent,
+    MessageSequence,
     ReplyComponent,
     StandardMessageComponents,
     TextComponent,
@@ -34,6 +34,8 @@ class MsgIDMapping:
     def __init__(self) -> None:
         """初始化消息 ID 到内容的映射缓存。"""
         self.mapping: Dict[str, Tuple[str | Task[str], UserInfo]] = {}
+        self.messages: Dict[str, MessageSequence] = {}
+        """转发节点的结构化内容，供引用保留图片等原始组件。"""
 
 
 class SessionMessage(MaiMessage):
@@ -426,34 +428,119 @@ class SessionMessage(MaiMessage):
         component: ReplyComponent,
         id_content_map: MsgIDMapping,
     ) -> str:
-        if component.target_message_content:
-            return component.target_message_content
+        """按 ID 解析结构化原消息，纯文本预览不能替代原消息。"""
+
         if result_item := id_content_map.mapping.get(component.target_message_id):  # ID映射缓存优先
             content, sender_info = result_item
             if isinstance(content, Task):  # 如果是Task，说明是转发组件传入的占位结果，需要等待其完成
                 content = await content  # 获取最终结果
                 id_content_map.mapping[component.target_message_id] = (content, sender_info)  # 更新为实际内容
-            component.target_message_content = content
-            tgt_msg_s_name = sender_info.user_cardname or sender_info.user_nickname or sender_info.user_id
+            component.target_message = MessageSequence(
+                self._copy_reply_components(id_content_map.messages[component.target_message_id].components)
+            )
             component.target_message_sender_cardname = sender_info.user_cardname
             component.target_message_sender_nickname = sender_info.user_nickname
             component.target_message_sender_id = sender_info.user_id
-            return f"[回复了{tgt_msg_s_name}的消息: {content}]"
-        else:  # 尝试从数据库根据消息id查找消息内容
-            try:
-                with get_db_session() as session:
-                    statement = select(Messages).filter_by(message_id=component.target_message_id).limit(1)
-                    if db_msg := session.exec(statement).first():
-                        component.target_message_content = db_msg.processed_plain_text
-                        component.target_message_sender_cardname = db_msg.user_cardname
-                        component.target_message_sender_nickname = db_msg.user_nickname
-                        component.target_message_sender_id = db_msg.user_id
-                        tgt_msg_s_name = db_msg.user_cardname or db_msg.user_nickname or db_msg.user_id
-                        return f"[回复了{tgt_msg_s_name}的消息: {db_msg.processed_plain_text}]"
-            except Exception as e:
-                logger.error(f"查询回复消息时发生错误: {e}")
+        elif component.target_message is None:
+            from .image_receive_compressor import process_received_images_in_message
+            from .reply_resolver import resolve_reply_message
 
-            return "[回复了一条消息，但原消息已无法访问]"
+            target_message = await resolve_reply_message(self, component.target_message_id)
+            if target_message is None:
+                component.target_message_content = None
+                return "[回复了一条消息，但原消息已无法访问]"
+            component.target_message = MessageSequence(self._copy_reply_components(target_message.raw_message.components))
+            sender_info = target_message.message_info.user_info
+            component.target_message_sender_cardname = sender_info.user_cardname
+            component.target_message_sender_nickname = sender_info.user_nickname
+            component.target_message_sender_id = sender_info.user_id
+            # 平台查询回来的图片也遵守入站压缩/丢弃策略，不绕过尺寸限制。
+            process_received_images_in_message(component.target_message.components)
+            await self._prepare_reply_media(component.target_message.components)
+
+        from src.maisaka.visual.chat_history_refresher import refresh_visual_component_descriptions
+
+        refresh_visual_component_descriptions(component.target_message.components)
+        content = self._render_reply_content(component.target_message.components)
+        component.target_message_content = content
+        sender_name = (
+            component.target_message_sender_cardname
+            or component.target_message_sender_nickname
+            or component.target_message_sender_id
+            or "未知用户"
+        )
+        return f"[回复了{sender_name}的消息: {content}]"
+
+    async def resolve_reply_components(self) -> None:
+        """补齐从数据库恢复后只含 ID 的引用，不重跑当前消息的媒体处理。"""
+
+        id_content_map = MsgIDMapping()
+        for component in self.raw_message.components:
+            if isinstance(component, ReplyComponent):
+                await self.process_reply_component(component, id_content_map)
+
+    @staticmethod
+    def _copy_reply_components(components: Sequence[StandardMessageComponents]) -> List[StandardMessageComponents]:
+        """引用只展开原消息自身的一层，避免嵌套引用和循环引用。"""
+
+        copied = [deepcopy(component) for component in components if not isinstance(component, ReplyComponent)]
+        for component in copied:
+            if isinstance(component, ForwardNodeComponent):
+                for node in component.forward_components:
+                    node.content = SessionMessage._copy_reply_components(node.content)
+        return copied
+
+    async def _prepare_reply_media(self, components: Sequence[StandardMessageComponents]) -> None:
+        """保存平台取回的媒体；本地仅有 hash 的组件不重复识别或转写。"""
+
+        for component in components:
+            if isinstance(component, ImageComponent) and component.binary_data:
+                from src.chat.image_system.image_manager import image_manager
+
+                await image_manager.ensure_image_saved(component.binary_data)
+                if not component.content.strip():
+                    description = await image_manager.get_image_description(
+                        image_hash=component.binary_hash,
+                        image_bytes=component.binary_data,
+                        wait_for_build=False,
+                    )
+                    if description:
+                        component.content = f"[图片：{description}]"
+            elif isinstance(component, EmojiComponent) and component.binary_data:
+                binary_data = component.binary_data
+                await self.process_emoji_component(component, enable_heavy_media_analysis=False)
+                component.binary_data = binary_data
+            elif isinstance(component, ForwardNodeComponent):
+                for node in component.forward_components:
+                    await self._prepare_reply_media(node.content)
+
+    def _render_reply_content(self, components: Sequence[StandardMessageComponents], depth: int = 0) -> str:
+        """从结构化原消息生成预览，图片优先使用已有描述。"""
+
+        parts: List[str] = []
+        for component in components:
+            if isinstance(component, TextComponent):
+                parts.append(component.text)
+            elif isinstance(component, ImageComponent):
+                parts.append(component.content.strip() or "[图片，识别中.....]")
+            elif isinstance(component, EmojiComponent):
+                parts.append(component.to_plain_text())
+            elif isinstance(component, VoiceComponent):
+                parts.append(component.content.strip() or "[语音消息]")
+            elif isinstance(component, AtComponent):
+                parts.append(f"@{component.target_user_cardname or component.target_user_nickname or component.target_user_id}")
+            elif isinstance(component, FileComponent):
+                parts.append(component.to_plain_text())
+            elif isinstance(component, DictComponent):
+                parts.append(self.process_dict_component(component))
+            elif isinstance(component, ForwardNodeComponent):
+                nodes: List[str] = []
+                for node in component.forward_components:
+                    sender = node.user_cardname or node.user_nickname or node.user_id or "未知用户"
+                    content = self._render_reply_content(node.content, depth + 1)
+                    nodes.append(f"{'-' * (depth + 1) * 2} 【{sender}】: {content}")
+                parts.append("【合并转发消息: \n" + "\n".join(nodes) + "\n】")
+        return " ".join(parts)
 
     async def process_forward_component(
         self,
@@ -491,6 +578,7 @@ class SessionMessage(MaiMessage):
             node_user_info = UserInfo(node.user_id or "未知用户", node.user_nickname, node.user_cardname)
             # 传入ID缓存映射，方便Reply组件获取并等待处理结果
             id_content_map.mapping[node.message_id] = (task, node_user_info)
+            id_content_map.messages[node.message_id] = MessageSequence(list(node.content))
 
             task_list.append(task)
             node_user_info_list.append(node_user_info)

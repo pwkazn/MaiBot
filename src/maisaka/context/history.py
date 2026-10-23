@@ -1,14 +1,22 @@
 """Maisaka 历史消息处理辅助工具。"""
 
-from typing import TYPE_CHECKING, cast
+from html import escape
+from typing import TYPE_CHECKING, List, cast
 
-from src.common.data_models.message_component_data_model import MessageSequence, ReplyComponent, TextComponent
+from src.common.data_models.message_component_data_model import (
+    ForwardNodeComponent,
+    MessageSequence,
+    ReplyComponent,
+    StandardMessageComponents,
+    TextComponent,
+)
 from src.llm_models.payload_content.context_item import ContextItem, FunctionCallItem
 from src.llm_models.payload_content.context_protocol import (
     analyze_context_item_relations,
     prune_context_items_for_history,
 )
-from src.maisaka.context.message_adapter import (
+
+from .message_adapter import (
     build_visible_text_from_sequence,
     clone_message_sequence,
     format_speaker_content,
@@ -22,17 +30,57 @@ TOOL_RESULT_MEDIA_SOURCE_KIND = "tool_result_media"
 OPTIMIZED_TOOL_HISTORY_SOURCE_KIND = "optimized_tool_history"
 
 
+def _expand_quoted_components(components: List[StandardMessageComponents]) -> List[StandardMessageComponents]:
+    """展开引用里的转发节点及媒体，保留发送者边界，但不跟进节点中的回复关系。"""
+
+    expanded: List[StandardMessageComponents] = []
+    for component in components:
+        if isinstance(component, ReplyComponent):
+            continue
+        if not isinstance(component, ForwardNodeComponent):
+            expanded.append(component)
+            continue
+        for node in component.forward_components:
+            sender = node.user_cardname or node.user_nickname or node.user_id or "未知用户"
+            expanded.append(TextComponent(
+                f'\n<forward_message user_id="{escape(node.user_id or "", quote=True)}" '
+                f'name="{escape(sender, quote=True)}">\n'
+            ))
+            expanded.extend(_expand_quoted_components(node.content))
+            expanded.append(TextComponent("\n</forward_message>\n"))
+    return expanded
+
+
 def build_prefixed_message_sequence(
     source_sequence: MessageSequence,
     planner_prefix: str,
 ) -> MessageSequence:
     """基于原始消息序列构造带规划器前缀的新序列。"""
 
-    planner_components = [
-        component
-        for component in clone_message_sequence(source_sequence).components
-        if not isinstance(component, ReplyComponent)
-    ]
+    planner_components: List[StandardMessageComponents] = []
+    for component in clone_message_sequence(source_sequence).components:
+        if not isinstance(component, ReplyComponent):
+            planner_components.append(component)
+            continue
+
+        # 引用只展开一层；原消息里的回复关系不继续展开，避免循环和重复嵌套。
+        if component.target_message is None:
+            continue
+        quoted_components = _expand_quoted_components(component.target_message.components)
+
+        sender = (
+            component.target_message_sender_cardname
+            or component.target_message_sender_nickname
+            or component.target_message_sender_id
+            or "未知用户"
+        )
+        planner_components.append(TextComponent(
+            f'\n<quoted_message msg_id="{escape(component.target_message_id, quote=True)}" '
+            f'user_id="{escape(component.target_message_sender_id or "", quote=True)}" '
+            f'name="{escape(sender, quote=True)}">\n'
+        ))
+        planner_components.extend(quoted_components)
+        planner_components.append(TextComponent("\n</quoted_message>\n[本条发言]\n"))
     if planner_components and isinstance(planner_components[0], TextComponent):
         planner_components[0].text = f"{planner_prefix}{planner_components[0].text}"
     else:

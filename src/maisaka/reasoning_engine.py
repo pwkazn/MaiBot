@@ -18,7 +18,6 @@ from src.chat.heart_flow.heartFC_utils import CycleDetail
 from src.chat.message_receive.message import SessionMessage
 from src.cli.console import console
 from src.common.data_models.message_component_data_model import (
-    EmojiComponent,
     ImageComponent,
     MessageSequence,
     TextComponent,
@@ -91,6 +90,7 @@ from src.maisaka.monitor.events import (
 from src.maisaka.memory.person_profile import build_person_profile_injection_messages
 from src.maisaka.context.planner_messages import build_planner_user_prefix_from_session_message
 from src.maisaka.visual.mode_utils import resolve_enable_visual_planner
+from src.maisaka.visual.component_loader import hydrate_visual_components
 
 from .chat_loop_service import ChatResponse, MaisakaChatLoopService
 
@@ -1226,6 +1226,7 @@ class MaisakaReasoningEngine:
     ) -> Optional[LLMContextMessage]:
         """根据真实消息构造上下文，allow_visual 控制是否加载和发送图片或表情。"""
 
+        await message.resolve_reply_components()
         source_sequence = message.raw_message
         visible_text = self._build_legacy_visible_text(message, source_sequence, source_kind=source_kind)
         include_chat_id = self._runtime._is_focus_mode_active_for_current_chat()
@@ -1234,20 +1235,21 @@ class MaisakaReasoningEngine:
             include_chat_id=include_chat_id,
             is_self_message=source_kind == "guided_reply",
         )
-        if contains_complex_message(source_sequence):
-            return ComplexSessionMessage.from_session_message(
-                message,
-                planner_prefix=planner_prefix,
-                visible_text=visible_text,
-                source_kind=source_kind,
-                allow_visual=allow_visual,
-            )
-
         user_sequence = await self._build_message_sequence(
             message,
             planner_prefix=planner_prefix,
             allow_visual=allow_visual,
         )
+        if contains_complex_message(user_sequence):
+            return ComplexSessionMessage.from_session_message(
+                message,
+                planner_prefix="",
+                visible_text=visible_text,
+                source_kind=source_kind,
+                allow_visual=allow_visual,
+                source_sequence=user_sequence,
+            )
+
         if not user_sequence.components:
             return None
 
@@ -1268,28 +1270,8 @@ class MaisakaReasoningEngine:
     ) -> MessageSequence:
         message_sequence = build_prefixed_message_sequence(message.raw_message, planner_prefix)
         if allow_visual and resolve_enable_visual_planner():
-            await self._hydrate_visual_components(message_sequence.components)
+            await hydrate_visual_components(message_sequence.components)
         return message_sequence
-
-    async def _hydrate_visual_components(self, planner_components: list[object]) -> None:
-        """在 Maisaka 真正需要图片或表情时，按需回填二进制数据。"""
-        load_tasks: list[asyncio.Task[None]] = []
-        for component in planner_components:
-            if isinstance(component, ImageComponent) and not component.binary_data:
-                load_tasks.append(asyncio.create_task(component.load_image_binary()))
-                continue
-            if isinstance(component, EmojiComponent) and not component.binary_data:
-                load_tasks.append(asyncio.create_task(component.load_emoji_binary()))
-
-        if not load_tasks:
-            return
-
-        results = await asyncio.gather(*load_tasks, return_exceptions=True)
-        for result in results:
-            if isinstance(result, Exception):
-                logger.warning(
-                    f"{self._runtime.log_prefix} 回填图片或表情二进制数据失败，Maisaka 将退化为文本占位: {result}"
-                )
 
     async def _refresh_chat_history_visual_placeholders(self) -> int:
         """在进入新一轮规划前，尝试用已完成的识图结果刷新历史占位。"""

@@ -147,6 +147,12 @@ def build_monitor_reply_preview(
 
         target_message_id = str(component.target_message_id or "").strip()
         target_content = str(component.target_message_content or "").strip()
+        if component.target_message is not None:
+            from src.maisaka.visual.chat_history_refresher import refresh_visual_component_descriptions
+
+            refresh_visual_component_descriptions(component.target_message.components)
+            target_content = message._render_reply_content(component.target_message.components)
+            component.target_message_content = target_content
         target_sender = (
             str(component.target_message_sender_cardname or "").strip()
             or str(component.target_message_sender_nickname or "").strip()

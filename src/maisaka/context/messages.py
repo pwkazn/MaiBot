@@ -589,19 +589,24 @@ class ComplexSessionMessage(SessionBackedMessage):
 
     prompt_text: str = ""
     complex_message_type: str = "forward"
+    prompt_sequence: Optional[MessageSequence] = None
 
     @property
     def source(self) -> str:
         return f"{self.source_kind}:{self.complex_message_type}"
 
     def to_context_item(self, enable_visual_message: bool = True) -> ContextItem | None:
-        del enable_visual_message
-        message_sequence = MessageSequence([TextComponent(self.prompt_text)])
+        message_sequence = self.prompt_sequence
+        if message_sequence is None:
+            message_sequence = MessageSequence([TextComponent(self.prompt_text)])
         return _build_item_from_sequence(
             RoleType.User,
             message_sequence,
             self.prompt_text,
+            enable_visual_message=enable_visual_message and self.allow_visual,
             meta=ContextItemMeta.create(item_id=self.context_item_id, timestamp=self.timestamp),
+            platform=self.original_message.platform if self.original_message is not None else "",
+            prefer_nickname=self.prefer_nickname,
         )
 
     @classmethod
@@ -613,15 +618,30 @@ class ComplexSessionMessage(SessionBackedMessage):
         visible_text: str,
         source_kind: str = "user",
         allow_visual: bool = True,
+        source_sequence: Optional[MessageSequence] = None,
     ) -> Optional["ComplexSessionMessage"]:
         """从真实 SessionMessage 构造复杂消息上下文消息。"""
 
-        prompt_text = _build_complex_message_prompt_text(session_message.raw_message, platform=session_message.platform)
+        message_sequence = source_sequence if source_sequence is not None else session_message.raw_message
+        prompt_text = _build_complex_message_prompt_text(message_sequence, platform=session_message.platform)
         if not prompt_text:
             return None
 
+        # 转发节点仍使用原有摘要；并列的引用图片保留组件，交给当前模型的视觉模式处理。
+        prompt_components = [
+            TextComponent(_build_forward_preview_block(component, platform=session_message.platform))
+            if isinstance(component, ForwardNodeComponent)
+            else component
+            for component in message_sequence.components
+        ]
+        if planner_prefix:
+            if prompt_components and isinstance(prompt_components[0], TextComponent):
+                prompt_components[0] = TextComponent(f"{planner_prefix}{prompt_components[0].text}")
+            else:
+                prompt_components.insert(0, TextComponent(planner_prefix))
+
         return cls(
-            raw_message=session_message.raw_message,
+            raw_message=message_sequence,
             visible_text=visible_text,
             timestamp=session_message.timestamp,
             message_id=session_message.message_id,
@@ -629,6 +649,7 @@ class ComplexSessionMessage(SessionBackedMessage):
             source_kind=source_kind,
             allow_visual=allow_visual,
             prompt_text=f"{planner_prefix}{prompt_text}",
+            prompt_sequence=MessageSequence(prompt_components),
         )
 
 

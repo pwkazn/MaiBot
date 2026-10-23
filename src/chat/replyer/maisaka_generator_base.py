@@ -65,6 +65,7 @@ from src.maisaka.context.planner_messages import (
 )
 from src.maisaka.display.prompt_cli_renderer import PromptCLIVisualizer
 from src.maisaka.memory.mid_term import is_mid_term_memory_message
+from src.maisaka.visual.component_loader import hydrate_visual_components
 from src.maisaka.visual.message_limiter import limit_latest_images_in_messages
 from src.plugin_runtime.hook_payloads import deserialize_prompt_items, serialize_prompt_items
 
@@ -722,7 +723,24 @@ class BaseMaisakaReplyGenerator:
             prefer_nickname=True,
         )
         if isinstance(message, ComplexSessionMessage):
-            return replace(message, prompt_text=f"{prefix}{body}", prefer_nickname=True)
+            prompt_sequence = message.prompt_sequence
+            if prompt_sequence is not None:
+                first_component = prompt_sequence.components[0]
+                if not isinstance(first_component, TextComponent):
+                    raise ValueError("真实聊天历史缺少消息身份前缀。")
+                _, _, sequence_body = first_component.text.partition(">\n")
+                prompt_sequence = MessageSequence(
+                    [
+                        TextComponent(f"{prefix}{sequence_body}"),
+                        *prompt_sequence.components[1:],
+                    ]
+                )
+            return replace(
+                message,
+                prompt_text=f"{prefix}{body}",
+                prompt_sequence=prompt_sequence,
+                prefer_nickname=True,
+            )
 
         # 其余组件只读共享，避免重建原始消息时丢失历史中已水合的图片二进制。
         replyer_sequence = MessageSequence([TextComponent(f"{prefix}{body}"), *message.raw_message.components[1:]])
@@ -1235,6 +1253,17 @@ class BaseMaisakaReplyGenerator:
                 api_provider = getattr(_client, "api_provider", None)
                 active_client_type = str(getattr(api_provider, "client_type", "") or "")
                 prompt_started_at = time.perf_counter()
+                enable_visual_message = self._resolve_enable_visual_message(model_info)
+                if enable_visual_message:
+                    # Replyer 的视觉模式独立于 Planner；仅文字召回仍不能加载图片。
+                    await hydrate_visual_components(
+                        [
+                            component
+                            for history_message in filtered_history
+                            if isinstance(history_message, SessionBackedMessage) and history_message.allow_visual
+                            for component in history_message.raw_message.components
+                        ]
+                    )
                 built_request_messages = self._build_request_messages(
                     chat_history=filtered_history,
                     reply_message=reply_message,
@@ -1242,7 +1271,7 @@ class BaseMaisakaReplyGenerator:
                     expression_habits=merged_expression_habits,
                     reply_requirements=reply_requirements_for_attempt,
                     stream_id=stream_id,
-                    enable_visual_message=self._resolve_enable_visual_message(model_info),
+                    enable_visual_message=enable_visual_message,
                     reply_tool_args=dict(reply_tool_args_for_attempt),
                 )
                 request_messages = await self._invoke_before_model_request_hook(

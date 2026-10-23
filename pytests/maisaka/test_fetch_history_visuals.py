@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from src.chat.message_receive.message import SessionMessage
+from src.common.data_models.mai_message_data_model import MessageInfo, UserInfo
 from src.common.data_models.message_component_data_model import (
     EmojiComponent,
     ImageComponent,
@@ -61,26 +62,13 @@ def _message(
     """使用真实消息组件，避开接收链路的数据库和媒体处理。"""
 
     sequence = MessageSequence(components)
-    return cast(
-        SessionMessage,
-        SimpleNamespace(
-            message_id=message_id,
-            platform="test-platform",
-            session_id="test-session",
-            timestamp=datetime(2026, 9, 22, 14, minute, 0),
-            message_info=SimpleNamespace(
-                user_info=SimpleNamespace(
-                    user_id="test-user",
-                    user_nickname="测试昵称",
-                    user_cardname="测试群名片",
-                ),
-            ),
-            is_notify=False,
-            raw_message=sequence,
-            processed_plain_text=build_visible_text_from_sequence(sequence),
-            process=AsyncMock(),
-        ),
-    )
+    message = SessionMessage(message_id, datetime(2026, 9, 22, 14, minute, 0), "test-platform")
+    message.session_id = "test-session"
+    message.message_info = MessageInfo(UserInfo("test-user", "测试昵称", "测试群名片"))
+    message.raw_message = sequence
+    message.processed_plain_text = build_visible_text_from_sequence(sequence)
+    message.process = AsyncMock()
+    return message
 
 
 @pytest.fixture
@@ -121,7 +109,7 @@ async def test_fetch_history_keeps_text_metadata_and_order_without_visual_payloa
     older = _message(
         "older",
         [
-            ReplyComponent("quoted-message"),
+            ReplyComponent("quoted-message", target_message=MessageSequence([TextComponent("引用原文")])),
             TextComponent("以前的消息"),
             ImageComponent(binary_hash="image-old", content="[图片：小猫]", binary_data=binary_data),
             EmojiComponent(binary_hash="emoji-old", content="[表情包: 大笑]", binary_data=binary_data),

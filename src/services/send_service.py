@@ -595,14 +595,14 @@ def _build_outbound_session_message(
 
 
 def _build_reply_component(reply_message_id: str, reply_message: Optional[MaiMessage]) -> ReplyComponent:
-    """根据被引用消息构造包含预览信息的回复组件。"""
+    """根据已知原消息构造结构化引用，预览由统一解析链路生成。"""
     if reply_message is None or reply_message.message_id != reply_message_id:
         return ReplyComponent(target_message_id=reply_message_id)
 
     user_info = reply_message.message_info.user_info
     return ReplyComponent(
         target_message_id=reply_message_id,
-        target_message_content=reply_message.processed_plain_text or "",
+        target_message=MessageSequence(SessionMessage._copy_reply_components(reply_message.raw_message.components)),
         target_message_sender_id=user_info.user_id,
         target_message_sender_nickname=user_info.user_nickname,
         target_message_sender_cardname=user_info.user_cardname,
@@ -610,13 +610,15 @@ def _build_reply_component(reply_message_id: str, reply_message: Optional[MaiMes
 
 
 def _fill_reply_component(component: ReplyComponent, reply_message: Optional[MaiMessage]) -> None:
-    """补齐已存在回复组件中的目标消息预览信息。"""
+    """补齐已存在回复组件中的结构化原消息和发送者。"""
     if reply_message is None or reply_message.message_id != component.target_message_id:
         return
 
     user_info = reply_message.message_info.user_info
-    if not component.target_message_content:
-        component.target_message_content = reply_message.processed_plain_text or ""
+    if component.target_message is None:
+        component.target_message = MessageSequence(
+            SessionMessage._copy_reply_components(reply_message.raw_message.components)
+        )
     if not component.target_message_sender_id:
         component.target_message_sender_id = user_info.user_id
     if not component.target_message_sender_nickname:
@@ -669,6 +671,7 @@ async def _prepare_message_for_platform_io(
             raise ValueError("set_reply=True 时必须提供 reply_message_id")
         _ensure_reply_component(message, reply_message_id, reply_message)
 
+    await message.resolve_reply_components()
     if set_reply or not message.processed_plain_text:
         message.processed_plain_text = _build_processed_plain_text(message)
     if typing:

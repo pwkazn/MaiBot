@@ -1,12 +1,14 @@
-import sys
+from datetime import datetime
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
+
 import asyncio
-import pytest
 import importlib
 import importlib.util
-from types import ModuleType
-from pathlib import Path
-from datetime import datetime
-from typing import TYPE_CHECKING
+import pytest
+import sys
 
 if TYPE_CHECKING:
     from src.common.data_models.message_component_data_model import MessageSequence, ForwardComponent
@@ -140,11 +142,16 @@ def setup_mocks(monkeypatch):
     person_utils_mod = _stub_module("src.common.utils.utils_person")
     person_utils_mod.PersonUtils = DummyPersonUtils
 
+    resolver_mod = _stub_module("src.chat.message_receive.reply_resolver")
+    resolver_mod.resolve_reply_message = AsyncMock(return_value=None)
+    visual_mod = _stub_module("src.maisaka.visual.chat_history_refresher")
+    visual_mod.refresh_visual_component_descriptions = lambda components: False
+
 
 def load_message_via_file(monkeypatch):
     setup_mocks(monkeypatch)
     file_path = Path(__file__).parent.parent.parent / "src" / "chat" / "message_receive" / "message.py"
-    spec = importlib.util.spec_from_file_location("message", file_path)
+    spec = importlib.util.spec_from_file_location("src.chat.message_receive._message_test", file_path)
     message_module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "message_module", message_module)
     spec.loader.exec_module(message_module)
@@ -202,7 +209,8 @@ async def test_image(monkeypatch):
     msg.raw_message = MessageSequence(components=[])
     msg.raw_message.components = [ImageComponent(binary_hash="image_hash"), TextComponent("Hello, world!")]
     await msg.process()
-    assert msg.processed_plain_text == "[一张图片，网卡了加载不出来] Hello, world!"
+    # 未识别的图片不写入假描述，由上下文渲染层展示占位。
+    assert msg.processed_plain_text == " Hello, world!"
 
 
 @pytest.mark.asyncio
@@ -213,7 +221,7 @@ async def test_emoji(monkeypatch):
     msg.raw_message = MessageSequence(components=[])
     msg.raw_message.components = [EmojiComponent(binary_hash="emoji_hash"), TextComponent("Hello, world!")]
     await msg.process()
-    assert msg.processed_plain_text == "[一个表情，网卡了加载不出来] Hello, world!"
+    assert msg.processed_plain_text == "[表情包] Hello, world!"
 
 
 @pytest.mark.asyncio
@@ -253,22 +261,14 @@ async def test_reply_component_fail_to_fetch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reply_component_success(monkeypatch):
-    module_msg = load_message_via_file(monkeypatch)
-
-    class DummyDBSessionWithReply(DummyDBSession):
-        def exec(self, s):
-            return self
-
-        def first(inner_self):
-            class DummyRecord:
-                processed_plain_text = "原消息内容"
-                user_cardname = "cardname123"
-                user_nickname = "nickname123"
-                user_id = "userid123"
-
-            return DummyRecord()
-
-    module_msg.get_db_session = lambda: DummyDBSessionWithReply()
+    load_message_via_file(monkeypatch)
+    target = SimpleNamespace(
+        raw_message=MessageSequence([TextComponent("原消息内容")]),
+        message_info=SimpleNamespace(
+            user_info=SimpleNamespace(user_cardname="cardname123", user_nickname="nickname123", user_id="userid123")
+        ),
+    )
+    sys.modules["src.chat.message_receive.reply_resolver"].resolve_reply_message.return_value = target
     msg = SessionMessage("msg123", datetime.now(), platform="test_platform")
     msg.session_id = "session123"
     msg.platform = "test_platform"
@@ -281,19 +281,17 @@ async def test_reply_component_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_reply_component_with_db_fail(monkeypatch):
     module_msg = load_message_via_file(monkeypatch)
-
-    class DummyDBSessionWithError(DummyDBSession):
-        def exec(self, s):
-            raise Exception("数据库查询失败")
-
-    module_msg.get_db_session = lambda: DummyDBSessionWithError()
+    sys.modules["src.chat.message_receive.reply_resolver"].resolve_reply_message.side_effect = RuntimeError(
+        "数据库查询失败"
+    )
     msg = SessionMessage("msg123", datetime.now(), platform="test_platform")
     msg.session_id = "session123"
     msg.platform = "test_platform"
     msg.raw_message = MessageSequence(components=[])
     msg.raw_message.components = [ReplyComponent(target_message_id="1919810"), TextComponent("Hello, world!")]
     await msg.process()
-    assert msg.processed_plain_text == "[回复了一条消息，但原消息已无法访问] Hello, world!"
+    # 查询错误由组件处理器记录，不能伪装成原消息已撤回或不可访问。
+    assert msg.processed_plain_text == "Hello, world!"
     assert any("数据库查询失败" in log for log in module_msg.logger.logging_record)
 
 
